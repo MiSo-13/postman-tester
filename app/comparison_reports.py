@@ -15,6 +15,13 @@ FILLS = {"RECOVERED": "D9EAD3", "REGRESSED": "F4CCCC", "CHANGED": "FFF2CC",
          "ADDED": "D9EAF7", "REMOVED": "E7E6E6"}
 
 
+def safe_excel_value(value):
+    # User-supplied Postman names and URLs must never become spreadsheet formulas.
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
 def summarize(changes):
     counts = Counter(row["change"] for row in changes)
     return {kind: counts[kind] for kind in CHANGES}
@@ -39,7 +46,7 @@ def export_comparison(storage, before_run_id: str, after_run_id: str,
     for cell in sheet[1]:
         cell.font = Font(bold=True)
     for row in changes:
-        sheet.append([row[field] for field in FIELDS])
+        sheet.append([safe_excel_value(row[field]) for field in FIELDS])
         color = FILLS.get(row["change"])
         if color:
             sheet.cell(sheet.max_row, 6).fill = PatternFill("solid", fgColor=color)
