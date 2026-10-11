@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTreeWidget, QTreeWidgetItem, QTextEdit, QLabel,
     QComboBox, QFileDialog, QMessageBox, QInputDialog, QSplitter,
-    QTabWidget, QListWidget, QListWidgetItem, QCheckBox, QLineEdit, QDialog, QDialogButtonBox
+    QTabWidget, QListWidget, QListWidgetItem, QCheckBox, QLineEdit, QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem, QAbstractItemView
 )
 
 from .settings import Settings
@@ -20,6 +20,7 @@ from .reports import export_reports
 from .user_auth import login_tokens, refresh_tokens, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
 from .request_overrides import endpoint_key, validate_raw_json
 from .scenarios import resolve_steps, validate_steps, should_stop
+from .retry import retry_candidates
 
 
 class RunWorker(QThread):
@@ -195,12 +196,24 @@ class MainWindow(QMainWindow):
         self.log_text.setReadOnly(True)
         self.history = QListWidget()
         self.history.currentItemChanged.connect(self.show_history)
+        self.result_table = QTableWidget(0, 6)
+        self.result_table.setHorizontalHeaderLabels(
+            ["API", "Method", "상태", "HTTP", "시간(ms)", "상세"])
+        self.result_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.result_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.retry_button = QPushButton("선택한 실패 읽기 API 재실행")
+        self.retry_button.clicked.connect(self.retry_failed)
+        results_panel = QWidget()
+        results_layout = QVBoxLayout(results_panel)
+        results_layout.addWidget(self.result_table)
+        results_layout.addWidget(self.retry_button)
         self.report_list = QListWidget()
         for name, widget in [("Request 미리보기", self.request_text),
                              ("Response 예시", self.response_text),
                              ("JSON Body 편집", body_panel),
                              ("실행 로그", self.log_text),
                              ("이전 실행", self.history),
+                             ("실행 결과 상세", results_panel),
                              ("보관된 보고서", self.report_list)]:
             tabs.addTab(widget, name)
         splitter.addWidget(tabs)
