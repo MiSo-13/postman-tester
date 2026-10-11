@@ -25,7 +25,9 @@ def _blocked(reason: str) -> dict:
 
 def execute(endpoint, variables: dict, timeout: float = 20,
             verify_ssl: bool = True, allow_writes: bool = False,
-            raw_body_override: str | None = None) -> dict:
+            raw_body_override: str | None = None,
+            user_access_token: str | None = None,
+            admin_access_token: str | None = None) -> dict:
     """Only send supported request shapes; all checks precede the HTTP call."""
     method = endpoint.method.upper()
     if method not in ("GET", "HEAD", "OPTIONS") and not allow_writes:
@@ -34,8 +36,18 @@ def execute(endpoint, variables: dict, timeout: float = 20,
     request = endpoint.request
     auth = request.get("auth") or {}
     # Inherited Collection/folder auth is not yet modeled: fail closed.
-    if isinstance(auth, dict) and auth.get("type") not in (None, "noauth"):
-        return _blocked("인증 요청은 아직 지원하지 않습니다.")
+    if isinstance(auth, dict) and auth.get("type") not in (None, "noauth", "bearer"):
+        return _blocked("지원하지 않는 인증 유형입니다.")
+    if isinstance(auth, dict) and auth.get("type") == "bearer":
+        from .user_auth import needs_user_token, needs_admin_token
+        if needs_user_token(endpoint):
+            if not user_access_token:
+                return _blocked("USER 로그인 토큰이 없습니다.")
+        elif needs_admin_token(endpoint):
+            if not admin_access_token:
+                return _blocked("ADMIN 로그인 토큰이 없습니다.")
+        else:
+            return _blocked("지원하지 않는 Bearer 인증 프로필입니다.")
     headers_source = request.get("header", [])
     if not isinstance(headers_source, list):
         return _blocked("지원하지 않는 Header 형식입니다.")
@@ -55,7 +67,11 @@ def execute(endpoint, variables: dict, timeout: float = 20,
             if h.get("key") and not h.get("disabled", False)
         }
         if any(k.lower() == "authorization" for k in headers):
-            return _blocked("인증 Header 자동 처리 기능은 아직 지원하지 않습니다.")
+            return _blocked("직접 지정한 Authorization Header는 아직 지원하지 않습니다.")
+        if isinstance(auth, dict) and auth.get("type") == "bearer":
+            from .user_auth import needs_user_token
+            token = user_access_token if needs_user_token(endpoint) else admin_access_token
+            headers["Authorization"] = f"Bearer {token}"
         payload = None
         if body:
             source = raw_body_override if raw_body_override is not None else body.get("raw", "")
