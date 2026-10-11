@@ -1,0 +1,1 @@
+"""Postman Tester desktop application."""
