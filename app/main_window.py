@@ -307,6 +307,11 @@ class MainWindow(QMainWindow):
         self.body_message.setText("원본으로 복원되었습니다.")
 
     def start_run(self):
+        if self.body_message.text() == "저장되지 않은 수정사항":
+            QMessageBox.warning(
+                self, "저장되지 않은 JSON",
+                "JSON Body 편집 내용이 저장되지 않았습니다. 먼저 'JSON 수정 저장'을 눌러주세요.")
+            return
         if not self.current_project() or not self.endpoints:
             QMessageBox.warning(self, "실행 불가", "프로젝트와 Collection을 선택하세요.")
             return
