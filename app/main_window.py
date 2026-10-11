@@ -680,10 +680,18 @@ class MainWindow(QMainWindow):
 
     def show_history(self, current, previous):
         self.report_list.clear()
+        self.result_table.setRowCount(0)
         if not current:
             return
         run_id = current.text().split()[-1]
         results = self.storage.results(run_id)
+        self.result_table.setRowCount(len(results))
+        for i, result in enumerate(results):
+            values = [result["endpoint_name"], result["method"], result["status"],
+                      result["http_status"], result["elapsed_ms"], result["detail"]]
+            for column, value in enumerate(values):
+                self.result_table.setItem(i, column, QTableWidgetItem(
+                    "" if value is None else str(value)))
         self.log_text.setPlainText("\n".join(
             f"[{r['status']}] {r['method']} {r['url']} ({r['http_status']}) {r['detail']}"
             for r in results))
