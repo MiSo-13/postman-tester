@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTreeWidget, QTreeWidgetItem, QTextEdit, QLabel,
     QComboBox, QFileDialog, QMessageBox, QInputDialog, QSplitter,
-    QTabWidget, QListWidget, QCheckBox
+    QTabWidget, QListWidget, QCheckBox, QLineEdit
 )
 
 from .settings import Settings
@@ -352,7 +352,7 @@ class MainWindow(QMainWindow):
                 if not ok or not email.strip():
                     return
                 password, ok = QInputDialog.getText(
-                    self, "USER 로그인", "userPassword", QInputDialog.EchoMode.Password)
+                    self, "USER 로그인", "userPassword", QLineEdit.EchoMode.Password)
                 if not ok or not password:
                     return
                 user_credentials = (email.strip(), password)
