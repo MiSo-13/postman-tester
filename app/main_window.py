@@ -402,20 +402,53 @@ class MainWindow(QMainWindow):
             self, "시나리오 이름", "이름", text=item["name"] if item else "")
         if not ok:
             return
-        steps = json.loads(item["steps_json"]) if item else self.endpoint_keys
-        numbers = [self.endpoint_keys.index(k) + 1 for k in steps if k in self.endpoint_keys]
-        lines = "\n".join(f"{i + 1}. {e.method} {e.name}" for i, e in enumerate(self.endpoints))
-        raw, ok = QInputDialog.getMultiLineText(
-            self, "실행 순서 편집",
-            "API 목록(번호):\n" + lines[:3500] + "\n\n실행할 번호를 쉼표로 구분:",
-            ", ".join(map(str, numbers)))
-        if not ok:
+        steps = json.loads(item["steps_json"]) if item else list(self.endpoint_keys)
+        try:
+            validate_steps(steps, self.endpoint_keys)
+        except ValueError as exc:
+            QMessageBox.warning(self, "시나리오 오류", str(exc))
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("시나리오 편집 (드래그로 순서 변경)")
+        dialog.resize(550, 520)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("아래 목록에서 행을 드래그해 실행 순서를 변경하세요."))
+        available = QComboBox()
+        for i, endpoint in enumerate(self.endpoints):
+            available.addItem(f"{i+1}. {endpoint.method} {endpoint.name}", self.endpoint_keys[i])
+        layout.addWidget(available)
+        ordered = QListWidget()
+        ordered.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        for key in steps:
+            ep = self.endpoints[self.endpoint_keys.index(key)]
+            row = QListWidgetItem(f"{ep.method} {ep.name}")
+            row.setData(Qt.ItemDataRole.UserRole, key)
+            ordered.addItem(row)
+        layout.addWidget(ordered)
+        actions = QHBoxLayout()
+        add = QPushButton("API 추가")
+        remove = QPushButton("선택 단계 삭제")
+        def add_step():
+            item = QListWidgetItem(available.currentText())
+            item.setData(Qt.ItemDataRole.UserRole, available.currentData())
+            ordered.addItem(item)
+        add.clicked.connect(add_step)
+        remove.clicked.connect(lambda: ordered.takeItem(ordered.currentRow())
+                               if ordered.currentRow() >= 0 else None)
+        actions.addWidget(add)
+        actions.addWidget(remove)
+        layout.addLayout(actions)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            indices = [int(x.strip()) for x in raw.split(",")]
-            if any(i < 1 or i > len(self.endpoint_keys) for i in indices):
-                raise ValueError("API 번호가 범위를 벗어났습니다.")
-            keys = validate_steps([self.endpoint_keys[i - 1] for i in indices], self.endpoint_keys)
+            keys = validate_steps(
+                [ordered.item(i).data(Qt.ItemDataRole.UserRole)
+                 for i in range(ordered.count())], self.endpoint_keys)
             self.storage.save_scenario(project, name, keys, item["id"] if item else None)
         except (ValueError, TypeError) as exc:
             QMessageBox.warning(self, "시나리오 오류", str(exc))
