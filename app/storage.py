@@ -26,6 +26,13 @@ class Storage:
                 kind TEXT NOT NULL, filename TEXT NOT NULL,
                 content TEXT NOT NULL, created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS request_overrides (
+                project_id TEXT NOT NULL REFERENCES projects(id),
+                endpoint_key TEXT NOT NULL,
+                raw_body TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(project_id, endpoint_key)
+            );
             CREATE TABLE IF NOT EXISTS test_runs (
                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
                 name TEXT NOT NULL, status TEXT NOT NULL,
@@ -112,3 +119,24 @@ class Storage:
     def reports(self, run_id: str) -> list[dict]:
         with self.connect() as db:
             return [dict(r) for r in db.execute("SELECT * FROM reports WHERE run_id=?", (run_id,))]
+
+    def get_request_override(self, project_id: str, endpoint_key: str) -> str | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT raw_body FROM request_overrides WHERE project_id=? AND endpoint_key=?",
+                (project_id, endpoint_key)).fetchone()
+            return row["raw_body"] if row else None
+
+    def save_request_override(self, project_id: str, endpoint_key: str, body: str) -> None:
+        with self.connect() as db:
+            db.execute("""
+                INSERT INTO request_overrides(project_id,endpoint_key,raw_body,updated_at)
+                VALUES(?,?,?,?)
+                ON CONFLICT(project_id,endpoint_key) DO UPDATE SET
+                    raw_body=excluded.raw_body, updated_at=excluded.updated_at
+            """, (project_id, endpoint_key, body, utc_now()))
+
+    def remove_request_override(self, project_id: str, endpoint_key: str) -> None:
+        with self.connect() as db:
+            db.execute("DELETE FROM request_overrides WHERE project_id=? AND endpoint_key=?",
+                       (project_id, endpoint_key))
