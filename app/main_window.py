@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTreeWidget, QTreeWidgetItem, QTextEdit, QLabel,
     QComboBox, QFileDialog, QMessageBox, QInputDialog, QSplitter,
-    QTabWidget, QListWidget, QCheckBox
+    QTabWidget, QListWidget, QCheckBox, QLineEdit
 )
 
 from .settings import Settings
@@ -17,29 +17,65 @@ from .postman import parse_collection, parse_environment, preview_body, preview_
 from .templates import save_examples
 from .runner import execute
 from .reports import export_reports
+from .user_auth import user_login, admin_login, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
+from .request_overrides import endpoint_key, validate_raw_json
 
 
 class RunWorker(QThread):
     progress = pyqtSignal(str, str)
     finished_run = pyqtSignal(str)
 
-    def __init__(self, storage, run_id, endpoints, variables, settings):
+    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None):
         super().__init__()
         self.storage = storage
         self.run_id = run_id
         self.endpoints = endpoints
         self.variables = variables
         self.settings = settings
+        self.body_overrides = body_overrides
+        self.user_credentials = user_credentials
+        self.admin_credentials = admin_credentials
+        self.auth_configs = auth_configs or {}
 
     def run(self):
         status = "COMPLETED"
         try:
-            for endpoint in self.endpoints:
+            user_token = None
+            if self.user_credentials and any(needs_user_token(e) for _, e in self.endpoints):
+                try:
+                    base_url = self.variables.get("baseUrl", "")
+                    user_token = user_login(
+                        base_url, *self.user_credentials,
+                        timeout=self.settings.values["default_timeout_seconds"],
+                        verify_ssl=self.settings.values["verify_ssl"],
+                        config=self.auth_configs.get("USER"))
+                    self.progress.emit("USER 로그인", "PASS")
+                except LoginError as exc:
+                    self.progress.emit("USER 로그인", f"ERROR: {exc}")
+                    status = "ERROR"
+                    return
+            admin_token = None
+            if self.admin_credentials and any(needs_admin_token(e) for _, e in self.endpoints):
+                try:
+                    admin_token = admin_login(
+                        self.variables.get("baseUrl", ""), *self.admin_credentials,
+                        timeout=self.settings.values["default_timeout_seconds"],
+                        verify_ssl=self.settings.values["verify_ssl"],
+                        config=self.auth_configs.get("ADMIN"))
+                    self.progress.emit("ADMIN 로그인", "PASS")
+                except LoginError as exc:
+                    self.progress.emit("ADMIN 로그인", f"ERROR: {exc}")
+                    status = "ERROR"
+                    return
+            for key, endpoint in self.endpoints:
                 result = execute(
                     endpoint, self.variables,
                     timeout=self.settings.values["default_timeout_seconds"],
                     verify_ssl=self.settings.values["verify_ssl"],
-                    allow_writes=self.settings.values["dangerous_methods_enabled"])
+                    allow_writes=self.settings.values["dangerous_methods_enabled"],
+                    raw_body_override=self.body_overrides.get(key),
+                    user_access_token=user_token,
+                    admin_access_token=admin_token)
                 self.storage.add_result(
                     self.run_id, endpoint.name, endpoint.method, endpoint.url, **result)
                 self.progress.emit(endpoint.name, result["status"])
@@ -58,9 +94,14 @@ class MainWindow(QMainWindow):
         self.storage = Storage(self.settings.data_path())
         self.endpoints = []
         self.environment = {}
+        self.endpoint_keys = []
+        self.selected_endpoint_index = None
         self.setWindowTitle("Postman Tester")
         self.resize(1150, 760)
         self.build_ui()
+        self.body_editor.setEnabled(False)
+        self.body_save.setEnabled(False)
+        self.body_reset.setEnabled(False)
         self.refresh_projects()
 
     def build_ui(self):
@@ -76,6 +117,7 @@ class MainWindow(QMainWindow):
             ("새 프로젝트", self.add_project), ("Collection Import", self.import_collection),
             ("Environment Import", self.import_environment),
             ("예제 JSON 내려받기", self.download_examples),
+            ("로그인 설정", self.configure_logins),
             ("테스트 실행", self.start_run),
         ]:
             button = QPushButton(label)
@@ -92,6 +134,22 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         self.request_text = QTextEdit()
         self.request_text.setReadOnly(True)
+        self.body_editor = QTextEdit()
+        self.body_editor.setPlaceholderText("Raw JSON Body (주석 지원)")
+        self.body_editor.textChanged.connect(self.on_body_changed)
+        self.body_save = QPushButton("JSON 수정 저장")
+        self.body_save.clicked.connect(self.save_body)
+        self.body_reset = QPushButton("원본으로 복원")
+        self.body_reset.clicked.connect(self.reset_body)
+        self.body_message = QLabel("Raw JSON API를 선택하세요.")
+        body_panel = QWidget()
+        body_layout = QVBoxLayout(body_panel)
+        body_layout.addWidget(self.body_editor)
+        actions = QHBoxLayout()
+        actions.addWidget(self.body_save)
+        actions.addWidget(self.body_reset)
+        body_layout.addLayout(actions)
+        body_layout.addWidget(self.body_message)
         self.response_text = QTextEdit()
         self.response_text.setReadOnly(True)
         self.log_text = QTextEdit()
@@ -101,6 +159,7 @@ class MainWindow(QMainWindow):
         self.report_list = QListWidget()
         for name, widget in [("Request 미리보기", self.request_text),
                              ("Response 예시", self.response_text),
+                             ("JSON Body 편집", body_panel),
                              ("실행 로그", self.log_text),
                              ("이전 실행", self.history),
                              ("보관된 보고서", self.report_list)]:
@@ -135,7 +194,12 @@ class MainWindow(QMainWindow):
         project = self.current_project()
         self.tree.clear()
         self.endpoints = []
+        self.endpoint_keys = []
+        self.selected_endpoint_index = None
         self.environment = {}
+        self.body_editor.blockSignals(True)
+        self.body_editor.clear()
+        self.body_editor.blockSignals(False)
         self.history.clear()
         self.report_list.clear()
         if not project:
@@ -157,6 +221,13 @@ class MainWindow(QMainWindow):
     def load_collection_document(self, document):
         from .postman import endpoints_from_document
         self.endpoints = endpoints_from_document(document)
+        seen = {}
+        self.endpoint_keys = []
+        for endpoint in self.endpoints:
+            signature = (endpoint.folder, endpoint.name, endpoint.method, endpoint.url)
+            ordinal = seen.get(signature, 0)
+            seen[signature] = ordinal + 1
+            self.endpoint_keys.append(endpoint_key(endpoint, ordinal))
         self.tree.clear()
         groups = {}
         for index, endpoint in enumerate(self.endpoints):
@@ -201,6 +272,31 @@ class MainWindow(QMainWindow):
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             QMessageBox.critical(self, "Import 오류", str(exc))
 
+    def configure_logins(self):
+        project = self.current_project()
+        if not project:
+            QMessageBox.warning(self, "프로젝트 필요", "프로젝트를 먼저 만드세요.")
+            return
+        for profile in ("USER", "ADMIN"):
+            original = self.storage.get_auth_config(project, profile) or DEFAULT_LOGIN_CONFIGS[profile]
+            updated = {}
+            for field, label in (
+                ("endpoint", "로그인 Endpoint (상대 경로)"),
+                ("identifier_key", "계정 ID 요청 필드명"),
+                ("password_key", "비밀번호 요청 필드명"),
+            ):
+                value, ok = QInputDialog.getText(
+                    self, f"{profile} 로그인 설정", label, text=original[field])
+                if not ok:
+                    return
+                updated[field] = value.strip()
+            try:
+                self.storage.save_auth_config(project, profile, updated)
+            except ValueError as exc:
+                QMessageBox.warning(self, "인증 설정 오류", str(exc))
+                return
+        QMessageBox.information(self, "저장 완료", "USER/ADMIN 로그인 설정을 저장했습니다.\\n계정과 비밀번호는 저장하지 않습니다.")
+
     def download_examples(self):
         folder = QFileDialog.getExistingDirectory(self, "예제 JSON 저장 폴더")
         if folder:
@@ -209,30 +305,127 @@ class MainWindow(QMainWindow):
 
     def show_endpoint(self, current, previous):
         if current is None:
+            self.selected_endpoint_index = None
+            self.body_editor.setEnabled(False)
             return
         index = current.data(0, Qt.ItemDataRole.UserRole)
         if index is None:
+            self.selected_endpoint_index = None
+            self.body_editor.setEnabled(False)
             return
+        self.selected_endpoint_index = index
         endpoint = self.endpoints[index]
         self.request_text.setPlainText(
             f"{endpoint.method} {endpoint.url}\n\n"
             + json.dumps(endpoint.request, ensure_ascii=False, indent=2)
             + "\n\n--- BODY ---\n" + preview_body(endpoint))
         self.response_text.setPlainText(preview_response(endpoint))
+        body = endpoint.request.get("body", {})
+        editable = body.get("mode") == "raw" and body.get("options", {}).get("raw", {}).get("language", "json") == "json"
+        self.body_editor.setEnabled(editable)
+        self.body_save.setEnabled(editable)
+        self.body_reset.setEnabled(editable)
+        self.body_editor.blockSignals(True)
+        original = body.get("raw", "") if editable else ""
+        saved = self.storage.get_request_override(self.current_project(), self.endpoint_keys[index]) if editable else None
+        self.body_editor.setPlainText(saved if saved is not None else original)
+        self.body_editor.blockSignals(False)
+        self.body_message.setText("저장된 수정값" if saved is not None else
+                                  "원본 JSON (저장하면 프로젝트별로 보존)" if editable else
+                                  "이 API에는 편집 가능한 Raw JSON Body가 없습니다.")
+
+    def on_body_changed(self):
+        if self.selected_endpoint_index is not None:
+            self.body_message.setText("저장되지 않은 수정사항")
+
+    def save_body(self):
+        index = self.selected_endpoint_index
+        if index is None or not self.body_editor.isEnabled():
+            return
+        raw = self.body_editor.toPlainText()
+        try:
+            validate_raw_json(raw)
+        except ValueError as exc:
+            QMessageBox.warning(self, "JSON 검증 실패", str(exc))
+            return
+        self.storage.save_request_override(self.current_project(), self.endpoint_keys[index], raw)
+        self.body_message.setText("저장 완료 — 앱을 재시작해도 유지됩니다.")
+        self.statusBar().showMessage("Request JSON 수정값을 저장했습니다.")
+
+    def reset_body(self):
+        index = self.selected_endpoint_index
+        if index is None or not self.body_editor.isEnabled():
+            return
+        if QMessageBox.question(self, "원본 복원", "저장된 수정값을 삭제하고 Collection 원본으로 복원합니까?") != QMessageBox.StandardButton.Yes:
+            return
+        self.storage.remove_request_override(self.current_project(), self.endpoint_keys[index])
+        original = self.endpoints[index].request.get("body", {}).get("raw", "")
+        self.body_editor.blockSignals(True)
+        self.body_editor.setPlainText(original)
+        self.body_editor.blockSignals(False)
+        self.body_message.setText("원본으로 복원되었습니다.")
 
     def start_run(self):
+        if self.body_message.text() == "저장되지 않은 수정사항":
+            QMessageBox.warning(
+                self, "저장되지 않은 JSON",
+                "JSON Body 편집 내용이 저장되지 않았습니다. 먼저 'JSON 수정 저장'을 눌러주세요.")
+            return
         if not self.current_project() or not self.endpoints:
             QMessageBox.warning(self, "실행 불가", "프로젝트와 Collection을 선택하세요.")
             return
         chosen = self.tree.selectedItems()
         index = chosen[0].data(0, Qt.ItemDataRole.UserRole) if chosen else None
-        endpoints = [self.endpoints[index]] if index is not None else list(self.endpoints)
+        indices = [index] if index is not None else list(range(len(self.endpoints)))
+        endpoints = [(self.endpoint_keys[i], self.endpoints[i]) for i in indices]
         message = f"API {len(endpoints)}개를 실행합니다.\n쓰기 API는 기본적으로 SKIPPED 처리됩니다.\n계속하시겠습니까?"
         if QMessageBox.question(self, "테스트 시작", message) != QMessageBox.StandardButton.Yes:
             return
         run_id = self.storage.create_run(self.current_project(), "기본 실행")
         self.log_text.append(f"Run ID: {run_id}")
-        self.worker = RunWorker(self.storage, run_id, endpoints, self.environment.copy(), self.settings)
+        user_credentials = None
+        if any(needs_user_token(e) for _, e in endpoints):
+            answer = QMessageBox.question(
+                self, "USER 자동 로그인",
+                "선택한 API에 USER Bearer 인증이 필요합니다.\n"
+                "계정으로 로그인 후 토큰을 적용하시겠습니까?\n"
+                "계정 및 토큰은 앱에 저장되지 않습니다.")
+            if answer == QMessageBox.StandardButton.Yes:
+                email, ok = QInputDialog.getText(self, "USER 로그인", "userEmail")
+                if not ok or not email.strip():
+                    return
+                password, ok = QInputDialog.getText(
+                    self, "USER 로그인", "userPassword", QLineEdit.EchoMode.Password)
+                if not ok or not password:
+                    return
+                user_credentials = (email.strip(), password)
+        admin_credentials = None
+        if any(needs_admin_token(e) for _, e in endpoints):
+            answer = QMessageBox.question(
+                self, "ADMIN 자동 로그인",
+                "관리자 인증이 필요한 API가 있습니다. 로그인하시겠습니까?\n"
+                "계정 및 토큰은 저장되지 않습니다.")
+            if answer == QMessageBox.StandardButton.Yes:
+                admin_id, ok = QInputDialog.getText(self, "ADMIN 로그인", "adminId")
+                if not ok or not admin_id.strip():
+                    return
+                password, ok = QInputDialog.getText(
+                    self, "ADMIN 로그인", "adminPw", QLineEdit.EchoMode.Password)
+                if not ok or not password:
+                    return
+                admin_credentials = (admin_id.strip(), password)
+        body_overrides = {
+            key: stored for key, _ in endpoints
+            if (stored := self.storage.get_request_override(self.current_project(), key)) is not None
+        }
+        auth_configs = {
+            profile: self.storage.get_auth_config(self.current_project(), profile)
+                     or DEFAULT_LOGIN_CONFIGS[profile]
+            for profile in ("USER", "ADMIN")
+        }
+        self.worker = RunWorker(
+            self.storage, run_id, endpoints, self.environment.copy(), self.settings,
+            body_overrides, user_credentials, admin_credentials, auth_configs)
         self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
         self.worker.finished_run.connect(self.run_finished)
         self.worker.start()
