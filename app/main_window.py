@@ -17,6 +17,7 @@ from .postman import parse_collection, parse_environment, preview_body, preview_
 from .templates import save_examples
 from .runner import execute
 from .reports import export_reports
+from .request_overrides import endpoint_key, validate_raw_json
 
 
 class RunWorker(QThread):
@@ -58,9 +59,14 @@ class MainWindow(QMainWindow):
         self.storage = Storage(self.settings.data_path())
         self.endpoints = []
         self.environment = {}
+        self.endpoint_keys = []
+        self.selected_endpoint_index = None
         self.setWindowTitle("Postman Tester")
         self.resize(1150, 760)
         self.build_ui()
+        self.body_editor.setEnabled(False)
+        self.body_save.setEnabled(False)
+        self.body_reset.setEnabled(False)
         self.refresh_projects()
 
     def build_ui(self):
@@ -92,6 +98,22 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         self.request_text = QTextEdit()
         self.request_text.setReadOnly(True)
+        self.body_editor = QTextEdit()
+        self.body_editor.setPlaceholderText("Raw JSON Body (주석 지원)")
+        self.body_editor.textChanged.connect(self.on_body_changed)
+        self.body_save = QPushButton("JSON 수정 저장")
+        self.body_save.clicked.connect(self.save_body)
+        self.body_reset = QPushButton("원본으로 복원")
+        self.body_reset.clicked.connect(self.reset_body)
+        self.body_message = QLabel("Raw JSON API를 선택하세요.")
+        body_panel = QWidget()
+        body_layout = QVBoxLayout(body_panel)
+        body_layout.addWidget(self.body_editor)
+        actions = QHBoxLayout()
+        actions.addWidget(self.body_save)
+        actions.addWidget(self.body_reset)
+        body_layout.addLayout(actions)
+        body_layout.addWidget(self.body_message)
         self.response_text = QTextEdit()
         self.response_text.setReadOnly(True)
         self.log_text = QTextEdit()
@@ -101,6 +123,7 @@ class MainWindow(QMainWindow):
         self.report_list = QListWidget()
         for name, widget in [("Request 미리보기", self.request_text),
                              ("Response 예시", self.response_text),
+                             ("JSON Body 편집", body_panel),
                              ("실행 로그", self.log_text),
                              ("이전 실행", self.history),
                              ("보관된 보고서", self.report_list)]:
@@ -135,7 +158,12 @@ class MainWindow(QMainWindow):
         project = self.current_project()
         self.tree.clear()
         self.endpoints = []
+        self.endpoint_keys = []
+        self.selected_endpoint_index = None
         self.environment = {}
+        self.body_editor.blockSignals(True)
+        self.body_editor.clear()
+        self.body_editor.blockSignals(False)
         self.history.clear()
         self.report_list.clear()
         if not project:
@@ -157,6 +185,13 @@ class MainWindow(QMainWindow):
     def load_collection_document(self, document):
         from .postman import endpoints_from_document
         self.endpoints = endpoints_from_document(document)
+        seen = {}
+        self.endpoint_keys = []
+        for endpoint in self.endpoints:
+            signature = (endpoint.folder, endpoint.name, endpoint.method, endpoint.url)
+            ordinal = seen.get(signature, 0)
+            seen[signature] = ordinal + 1
+            self.endpoint_keys.append(endpoint_key(endpoint, ordinal))
         self.tree.clear()
         groups = {}
         for index, endpoint in enumerate(self.endpoints):
@@ -209,16 +244,65 @@ class MainWindow(QMainWindow):
 
     def show_endpoint(self, current, previous):
         if current is None:
+            self.selected_endpoint_index = None
+            self.body_editor.setEnabled(False)
             return
         index = current.data(0, Qt.ItemDataRole.UserRole)
         if index is None:
+            self.selected_endpoint_index = None
+            self.body_editor.setEnabled(False)
             return
+        self.selected_endpoint_index = index
         endpoint = self.endpoints[index]
         self.request_text.setPlainText(
             f"{endpoint.method} {endpoint.url}\n\n"
             + json.dumps(endpoint.request, ensure_ascii=False, indent=2)
             + "\n\n--- BODY ---\n" + preview_body(endpoint))
         self.response_text.setPlainText(preview_response(endpoint))
+        body = endpoint.request.get("body", {})
+        editable = body.get("mode") == "raw" and body.get("options", {}).get("raw", {}).get("language", "json") == "json"
+        self.body_editor.setEnabled(editable)
+        self.body_save.setEnabled(editable)
+        self.body_reset.setEnabled(editable)
+        self.body_editor.blockSignals(True)
+        original = body.get("raw", "") if editable else ""
+        saved = self.storage.get_request_override(self.current_project(), self.endpoint_keys[index]) if editable else None
+        self.body_editor.setPlainText(saved if saved is not None else original)
+        self.body_editor.blockSignals(False)
+        self.body_message.setText("저장된 수정값" if saved is not None else
+                                  "원본 JSON (저장하면 프로젝트별로 보존)" if editable else
+                                  "이 API에는 편집 가능한 Raw JSON Body가 없습니다.")
+
+    def on_body_changed(self):
+        if self.selected_endpoint_index is not None:
+            self.body_message.setText("저장되지 않은 수정사항")
+
+    def save_body(self):
+        index = self.selected_endpoint_index
+        if index is None or not self.body_editor.isEnabled():
+            return
+        raw = self.body_editor.toPlainText()
+        try:
+            validate_raw_json(raw)
+        except ValueError as exc:
+            QMessageBox.warning(self, "JSON 검증 실패", str(exc))
+            return
+        self.storage.save_request_override(self.current_project(), self.endpoint_keys[index], raw)
+        self.body_message.setText("저장 완료 — 앱을 재시작해도 유지됩니다.")
+        self.statusBar().showMessage("Request JSON 수정값을 저장했습니다.")
+
+    def reset_body(self):
+        index = self.selected_endpoint_index
+        if index is None or not self.body_editor.isEnabled():
+            return
+        if QMessageBox.question(self, "원본 복원", "저장된 수정값을 삭제하고 Collection 원본으로 복원합니까?") != QMessageBox.StandardButton.Yes:
+            return
+        self.storage.remove_request_override(self.current_project(), self.endpoint_keys[index])
+        original = self.endpoints[index].request.get("body", {}).get("raw", "")
+        self.body_editor.blockSignals(True)
+        self.body_editor.setPlainText(original)
+        self.body_editor.blockSignals(False)
+        self.body_message.setText("원본으로 복원되었습니다.")
 
     def start_run(self):
         if not self.current_project() or not self.endpoints:
