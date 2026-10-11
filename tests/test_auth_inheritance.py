@@ -59,7 +59,8 @@ def test_runner_uses_inherited_admin_and_respects_noauth():
     def handler(request):
         captured.append((request.url.path, request.headers.get("authorization")))
         return httpx.Response(200)
-    with patch("app.runner.httpx.Client", side_effect=lambda **kwargs: httpx.Client(
+    real_client = httpx.Client  # Save constructor before the patch replaces it.
+    with patch("app.runner.httpx.Client", side_effect=lambda **kwargs: real_client(
             transport=httpx.MockTransport(handler), **kwargs)):
         assert execute(api["inherited"], {}, admin_access_token="secret-admin")["status"] == "PASS"
         assert execute(api["explicit noauth"], {}, admin_access_token="secret-admin")["status"] == "PASS"
