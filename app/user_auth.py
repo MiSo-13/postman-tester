@@ -115,9 +115,9 @@ def _tokens_from_response(response, *, require_refresh=False):
     refresh = result.get("refreshToken")
     if not isinstance(access, str) or not access.strip():
         raise LoginError("인증 API에 Access Token이 없습니다.")
-    access = re.sub(r"^Bearer\\s+", "", access.strip(), flags=re.I)
+    access = re.sub(r"^Bearer\s+", "", access.strip(), flags=re.I)
     if isinstance(refresh, str):
-        refresh = re.sub(r"^Bearer\\s+", "", refresh.strip(), flags=re.I)
+        refresh = re.sub(r"^Bearer\s+", "", refresh.strip(), flags=re.I)
     else:
         refresh = None
     if require_refresh and not refresh:
