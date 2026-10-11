@@ -48,6 +48,15 @@ def parse_collection(path: str | Path) -> tuple[dict, list[Endpoint]]:
     return document, endpoints
 
 
+def endpoints_from_document(document: dict) -> list[Endpoint]:
+    """Parse a stored collection without requiring its original file."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "collection.json"
+        path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+        return parse_collection(path)[1]
+
+
 def parse_environment(path: str | Path) -> dict:
     doc = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(doc, dict) or not isinstance(doc.get("values"), list):
