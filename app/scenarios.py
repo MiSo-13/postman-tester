@@ -20,3 +20,8 @@ def resolve_steps(steps, endpoint_keys, endpoints):
     validated = validate_steps(steps, endpoint_keys)
     lookup = dict(zip(endpoint_keys, endpoints))
     return [(key, lookup[key]) for key in validated]
+
+
+def should_stop(result_status: str, stop_on_failure: bool) -> bool:
+    """Stop only on actual failure; user-disabled writes remain SKIPPED."""
+    return bool(stop_on_failure and result_status in ("FAIL", "ERROR", "BLOCKED"))
