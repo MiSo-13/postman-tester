@@ -30,8 +30,14 @@ def execute(endpoint, variables: dict, timeout: float = 20,
             raw_body_override: str | None = None,
             user_access_token: str | None = None,
             admin_access_token: str | None = None,
-            file_root: Path | None = None) -> dict:
+            file_root: Path | None = None,
+            assertions: list | None = None) -> dict:
     """Only send supported request shapes; all checks precede the HTTP call."""
+    from .assertions import validate_rules
+    try:
+        assertions = validate_rules(assertions or [])
+    except ValueError:
+        return _blocked("응답 검증 규칙이 올바르지 않습니다.")
     method = endpoint.method.upper()
     if method not in ("GET", "HEAD", "OPTIONS") and not allow_writes:
         return {"status": "SKIPPED", "http_status": None, "elapsed_ms": None,
@@ -106,11 +112,16 @@ def execute(endpoint, variables: dict, timeout: float = 20,
                 else:
                     response = client.request(method, url, headers=headers, content=payload)
         elapsed = round((time.monotonic() - started) * 1000, 2)
+        from .assertions import evaluate_response
+        passed, message = evaluate_response(response, assertions)
+        http_ok = 200 <= response.status_code < 300
         return {
-            "status": "PASS" if 200 <= response.status_code < 300 else "FAIL",
+            "status": "PASS" if passed and (http_ok or any(
+                rule["type"] == "status" for rule in assertions)) else "FAIL",
             "http_status": response.status_code, "elapsed_ms": elapsed,
-            # Do not store raw responses in unmasked logs/reports.
-            "detail": "" if response.status_code < 400 else f"HTTP {response.status_code}",
+            # Do not log response bodies or expected/actual assertion values.
+            "detail": message if assertions else (
+                "" if response.status_code < 400 else f"HTTP {response.status_code}"),
         }
     except (ValueError, OSError, json.JSONDecodeError) as exc:
         return _blocked(f"요청 구성이 올바르지 않습니다: {exc}")
