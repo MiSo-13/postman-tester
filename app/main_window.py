@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTreeWidget, QTreeWidgetItem, QTextEdit, QLabel,
     QComboBox, QFileDialog, QMessageBox, QInputDialog, QSplitter,
-    QTabWidget, QListWidget, QCheckBox, QLineEdit
+    QTabWidget, QListWidget, QListWidgetItem, QCheckBox, QLineEdit, QDialog, QDialogButtonBox
 )
 
 from .settings import Settings
@@ -19,14 +19,15 @@ from .runner import execute
 from .reports import export_reports
 from .user_auth import login_tokens, refresh_tokens, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
 from .request_overrides import endpoint_key, validate_raw_json
-from .scenarios import resolve_steps, validate_steps
+from .scenarios import resolve_steps, validate_steps, should_stop
 
 
 class RunWorker(QThread):
     progress = pyqtSignal(str, str)
     finished_run = pyqtSignal(str)
+    step_result = pyqtSignal(int, int, str, str)
 
-    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None, extraction_rules=None):
+    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None, extraction_rules=None, stop_on_failure=False):
         super().__init__()
         self.storage = storage
         self.run_id = run_id
@@ -39,6 +40,7 @@ class RunWorker(QThread):
         self.auth_configs = auth_configs or {}
         self.response_rules = response_rules or {}
         self.extraction_rules = extraction_rules or {}
+        self.stop_on_failure = stop_on_failure
 
     def run(self):
         status = "COMPLETED"
@@ -61,7 +63,7 @@ class RunWorker(QThread):
                         self.progress.emit(f"{profile} 로그인", f"ERROR: {exc}")
                         status = "ERROR"
                         return
-            for key, endpoint in self.endpoints:
+            for step_index, (key, endpoint) in enumerate(self.endpoints, start=1):
                 selected_profile = ("USER" if needs_user_token(endpoint) else
                                     "ADMIN" if needs_admin_token(endpoint) else None)
                 user_token = sessions["USER"][0] if sessions["USER"] else None
@@ -109,6 +111,10 @@ class RunWorker(QThread):
                 self.storage.add_result(
                     self.run_id, endpoint.name, endpoint.method, endpoint.url, **result)
                 self.progress.emit(endpoint.name, result["status"])
+                self.step_result.emit(step_index, len(self.endpoints), endpoint.name, result["status"])
+                if should_stop(result["status"], self.stop_on_failure):
+                    status = "STOPPED"
+                    break
         except Exception as exc:
             status = "ERROR"
             self.progress.emit("실행 오류", str(exc))
@@ -522,8 +528,11 @@ class MainWindow(QMainWindow):
         message = f"API {len(endpoints)}개를 실행합니다.\n쓰기 API는 기본적으로 SKIPPED 처리됩니다.\n계속하시겠습니까?"
         if QMessageBox.question(self, "테스트 시작", message) != QMessageBox.StandardButton.Yes:
             return
-        run_id = self.storage.create_run(self.current_project(), scenario_name or "기본 실행")
-        self.log_text.append(f"Run ID: {run_id}")
+        choice, ok = QInputDialog.getItem(self, "실패 처리 정책",
+            "FAIL / ERROR / BLOCKED 발생 시", ["계속 실행", "즉시 중단"], 0, False)
+        if not ok:
+            return
+        stop_on_failure = choice == "즉시 중단"
         user_credentials = None
         if any(needs_user_token(e) for _, e in endpoints):
             answer = QMessageBox.question(
@@ -572,10 +581,14 @@ class MainWindow(QMainWindow):
             key: self.storage.get_response_extractions(self.current_project(), key)
             for key, _ in endpoints
         }
+        run_id = self.storage.create_run(self.current_project(), scenario_name or '기본 실행')
+        self.log_text.append(f'Run ID: {run_id}')
         self.worker = RunWorker(
             self.storage, run_id, endpoints, self.environment.copy(), self.settings,
-            body_overrides, user_credentials, admin_credentials, auth_configs, response_rules, extraction_rules)
+            body_overrides, user_credentials, admin_credentials, auth_configs, response_rules, extraction_rules,
+            stop_on_failure=stop_on_failure)
         self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
+        self.worker.step_result.connect(lambda i, total, name, state: self.log_text.append(f'단계 {i}/{total}: [{state}] {name}'))
         self.worker.finished_run.connect(self.run_finished)
         self.worker.start()
         self.statusBar().showMessage("테스트 실행 중")
