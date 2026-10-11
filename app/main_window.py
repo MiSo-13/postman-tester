@@ -25,7 +25,7 @@ class RunWorker(QThread):
     progress = pyqtSignal(str, str)
     finished_run = pyqtSignal(str)
 
-    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None):
+    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None):
         super().__init__()
         self.storage = storage
         self.run_id = run_id
@@ -36,6 +36,7 @@ class RunWorker(QThread):
         self.user_credentials = user_credentials
         self.admin_credentials = admin_credentials
         self.auth_configs = auth_configs or {}
+        self.response_rules = response_rules or {}
 
     def run(self):
         status = "COMPLETED"
@@ -71,7 +72,8 @@ class RunWorker(QThread):
                     raw_body_override=self.body_overrides.get(key),
                     user_access_token=user_token,
                     admin_access_token=admin_token,
-                    file_root=self.settings.root / self.settings.values["file_root"])
+                    file_root=self.settings.root / self.settings.values["file_root"],
+                    assertions=self.response_rules.get(key, []))
                 # Only read-only requests may be automatically replayed after 401.
                 if (selected_profile and result.get("http_status") == 401
                         and endpoint.method.upper() in ("GET", "HEAD", "OPTIONS")
@@ -92,7 +94,8 @@ class RunWorker(QThread):
                             allow_writes=self.settings.values["dangerous_methods_enabled"],
                             raw_body_override=self.body_overrides.get(key),
                             user_access_token=user_token,
-                            admin_access_token=admin_token)
+                            admin_access_token=admin_token,
+                            assertions=self.response_rules.get(key, []))
                     except LoginError as exc:
                         self.progress.emit(f"{selected_profile} 토큰 갱신", f"ERROR: {exc}")
                         result["status"] = "ERROR"
@@ -139,6 +142,7 @@ class MainWindow(QMainWindow):
             ("Environment Import", self.import_environment),
             ("예제 JSON 내려받기", self.download_examples),
             ("로그인 설정", self.configure_logins),
+            ("응답 검증 규칙", self.configure_assertions),
             ("테스트 실행", self.start_run),
         ]:
             button = QPushButton(label)
@@ -318,6 +322,26 @@ class MainWindow(QMainWindow):
                 return
         QMessageBox.information(self, "저장 완료", "USER/ADMIN 로그인 설정을 저장했습니다.\\n계정과 비밀번호는 저장하지 않습니다.")
 
+    def configure_assertions(self):
+        index = self.selected_endpoint_index
+        if index is None or not self.current_project():
+            QMessageBox.warning(self, "API 선택 필요", "검증할 API를 먼저 선택하세요.")
+            return
+        key = self.endpoint_keys[index]
+        existing = self.storage.get_response_assertions(self.current_project(), key)
+        raw, ok = QInputDialog.getMultiLineText(
+            self, "응답 검증 규칙", "JSON 규칙 배열 (status / exists / equals)",
+            json.dumps(existing, ensure_ascii=False, indent=2))
+        if not ok:
+            return
+        try:
+            rules = json.loads(raw)
+            self.storage.save_response_assertions(self.current_project(), key, rules)
+        except (ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "규칙 오류", str(exc))
+            return
+        self.statusBar().showMessage("선택 API의 응답 검증 규칙을 저장했습니다.")
+
     def download_examples(self):
         folder = QFileDialog.getExistingDirectory(self, "예제 JSON 저장 폴더")
         if folder:
@@ -444,9 +468,13 @@ class MainWindow(QMainWindow):
                      or DEFAULT_LOGIN_CONFIGS[profile]
             for profile in ("USER", "ADMIN")
         }
+        response_rules = {
+            key: self.storage.get_response_assertions(self.current_project(), key)
+            for key, _ in endpoints
+        }
         self.worker = RunWorker(
             self.storage, run_id, endpoints, self.environment.copy(), self.settings,
-            body_overrides, user_credentials, admin_credentials, auth_configs)
+            body_overrides, user_credentials, admin_credentials, auth_configs, response_rules)
         self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
         self.worker.finished_run.connect(self.run_finished)
         self.worker.start()
