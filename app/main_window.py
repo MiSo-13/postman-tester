@@ -17,7 +17,7 @@ from .postman import parse_collection, parse_environment, preview_body, preview_
 from .templates import save_examples
 from .runner import execute
 from .reports import export_reports
-from .user_auth import user_login, admin_login, needs_user_token, needs_admin_token, LoginError
+from .user_auth import user_login, admin_login, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
 from .request_overrides import endpoint_key, validate_raw_json
 
 
@@ -25,7 +25,7 @@ class RunWorker(QThread):
     progress = pyqtSignal(str, str)
     finished_run = pyqtSignal(str)
 
-    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None):
+    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None):
         super().__init__()
         self.storage = storage
         self.run_id = run_id
@@ -35,6 +35,7 @@ class RunWorker(QThread):
         self.body_overrides = body_overrides
         self.user_credentials = user_credentials
         self.admin_credentials = admin_credentials
+        self.auth_configs = auth_configs or {}
 
     def run(self):
         status = "COMPLETED"
@@ -46,7 +47,8 @@ class RunWorker(QThread):
                     user_token = user_login(
                         base_url, *self.user_credentials,
                         timeout=self.settings.values["default_timeout_seconds"],
-                        verify_ssl=self.settings.values["verify_ssl"])
+                        verify_ssl=self.settings.values["verify_ssl"],
+                        config=self.auth_configs.get("USER"))
                     self.progress.emit("USER 로그인", "PASS")
                 except LoginError as exc:
                     self.progress.emit("USER 로그인", f"ERROR: {exc}")
@@ -58,7 +60,8 @@ class RunWorker(QThread):
                     admin_token = admin_login(
                         self.variables.get("baseUrl", ""), *self.admin_credentials,
                         timeout=self.settings.values["default_timeout_seconds"],
-                        verify_ssl=self.settings.values["verify_ssl"])
+                        verify_ssl=self.settings.values["verify_ssl"],
+                        config=self.auth_configs.get("ADMIN"))
                     self.progress.emit("ADMIN 로그인", "PASS")
                 except LoginError as exc:
                     self.progress.emit("ADMIN 로그인", f"ERROR: {exc}")
@@ -114,6 +117,7 @@ class MainWindow(QMainWindow):
             ("새 프로젝트", self.add_project), ("Collection Import", self.import_collection),
             ("Environment Import", self.import_environment),
             ("예제 JSON 내려받기", self.download_examples),
+            ("로그인 설정", self.configure_logins),
             ("테스트 실행", self.start_run),
         ]:
             button = QPushButton(label)
@@ -268,6 +272,31 @@ class MainWindow(QMainWindow):
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             QMessageBox.critical(self, "Import 오류", str(exc))
 
+    def configure_logins(self):
+        project = self.current_project()
+        if not project:
+            QMessageBox.warning(self, "프로젝트 필요", "프로젝트를 먼저 만드세요.")
+            return
+        for profile in ("USER", "ADMIN"):
+            original = self.storage.get_auth_config(project, profile) or DEFAULT_LOGIN_CONFIGS[profile]
+            updated = {}
+            for field, label in (
+                ("endpoint", "로그인 Endpoint (상대 경로)"),
+                ("identifier_key", "계정 ID 요청 필드명"),
+                ("password_key", "비밀번호 요청 필드명"),
+            ):
+                value, ok = QInputDialog.getText(
+                    self, f"{profile} 로그인 설정", label, text=original[field])
+                if not ok:
+                    return
+                updated[field] = value.strip()
+            try:
+                self.storage.save_auth_config(project, profile, updated)
+            except ValueError as exc:
+                QMessageBox.warning(self, "인증 설정 오류", str(exc))
+                return
+        QMessageBox.information(self, "저장 완료", "USER/ADMIN 로그인 설정을 저장했습니다.\\n계정과 비밀번호는 저장하지 않습니다.")
+
     def download_examples(self):
         folder = QFileDialog.getExistingDirectory(self, "예제 JSON 저장 폴더")
         if folder:
@@ -389,9 +418,14 @@ class MainWindow(QMainWindow):
             key: stored for key, _ in endpoints
             if (stored := self.storage.get_request_override(self.current_project(), key)) is not None
         }
+        auth_configs = {
+            profile: self.storage.get_auth_config(self.current_project(), profile)
+                     or DEFAULT_LOGIN_CONFIGS[profile]
+            for profile in ("USER", "ADMIN")
+        }
         self.worker = RunWorker(
             self.storage, run_id, endpoints, self.environment.copy(), self.settings,
-            body_overrides, user_credentials, admin_credentials)
+            body_overrides, user_credentials, admin_credentials, auth_configs)
         self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
         self.worker.finished_run.connect(self.run_finished)
         self.worker.start()
