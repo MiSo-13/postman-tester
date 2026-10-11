@@ -6,6 +6,31 @@ import httpx
 
 
 
+DEFAULT_LOGIN_CONFIGS = {
+    "USER": {"endpoint": "/api/auth/login",
+             "identifier_key": "userEmail", "password_key": "userPassword"},
+    "ADMIN": {"endpoint": "/api/backoffice/auth/login",
+              "identifier_key": "adminId", "password_key": "adminPw"},
+}
+
+
+def validate_login_config(config: dict) -> dict:
+    """Allow only relative API paths and ordinary JSON property names."""
+    if not isinstance(config, dict):
+        raise ValueError("로그인 설정 형식이 올바르지 않습니다.")
+    endpoint = config.get("endpoint", "")
+    if (not isinstance(endpoint, str) or not endpoint.startswith("/")
+            or endpoint.startswith("//") or "?" in endpoint or "#" in endpoint
+            or "\\r" in endpoint or "\\n" in endpoint
+            or "://" in endpoint or "\\\\" in endpoint):
+        raise ValueError("로그인 Endpoint는 /로 시작하는 상대 경로여야 합니다.")
+    for key in ("identifier_key", "password_key"):
+        value = config.get(key, "")
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError(f"{key}는 단순 JSON 필드 이름이어야 합니다.")
+    return {key: config[key] for key in ("endpoint", "identifier_key", "password_key")}
+
+
 class LoginError(Exception):
     pass
 
@@ -49,16 +74,18 @@ def needs_user_token(endpoint) -> bool:
                for item in bearer if isinstance(item, dict))
 
 def user_login(base_url: str, email: str, password: str, *,
-               timeout: float = 20, verify_ssl: bool = True) -> str:
-    return _login(base_url, email, password, endpoint="/api/auth/login",
-                  identifier_key="userEmail", password_key="userPassword",
+               timeout: float = 20, verify_ssl: bool = True,
+               config: dict | None = None) -> str:
+    return _login(base_url, email, password,
+                  **validate_login_config(config or DEFAULT_LOGIN_CONFIGS["USER"]),
                   timeout=timeout, verify_ssl=verify_ssl)
 
 
 def admin_login(base_url: str, admin_id: str, password: str, *,
-                timeout: float = 20, verify_ssl: bool = True) -> str:
-    return _login(base_url, admin_id, password, endpoint="/api/backoffice/auth/login",
-                  identifier_key="adminId", password_key="adminPw",
+                timeout: float = 20, verify_ssl: bool = True,
+                config: dict | None = None) -> str:
+    return _login(base_url, admin_id, password,
+                  **validate_login_config(config or DEFAULT_LOGIN_CONFIGS["ADMIN"]),
                   timeout=timeout, verify_ssl=verify_ssl)
 
 
