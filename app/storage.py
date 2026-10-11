@@ -26,6 +26,14 @@ class Storage:
                 kind TEXT NOT NULL, filename TEXT NOT NULL,
                 content TEXT NOT NULL, created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS auth_configs (
+                project_id TEXT NOT NULL REFERENCES projects(id),
+                profile TEXT NOT NULL CHECK(profile IN ('USER','ADMIN')),
+                endpoint TEXT NOT NULL,
+                identifier_key TEXT NOT NULL,
+                password_key TEXT NOT NULL,
+                PRIMARY KEY(project_id, profile)
+            );
             CREATE TABLE IF NOT EXISTS request_overrides (
                 project_id TEXT NOT NULL REFERENCES projects(id),
                 endpoint_key TEXT NOT NULL,
@@ -140,3 +148,26 @@ class Storage:
         with self.connect() as db:
             db.execute("DELETE FROM request_overrides WHERE project_id=? AND endpoint_key=?",
                        (project_id, endpoint_key))
+
+    def get_auth_config(self, project_id: str, profile: str) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT endpoint,identifier_key,password_key FROM auth_configs "
+                "WHERE project_id=? AND profile=?", (project_id, profile)).fetchone()
+            return dict(row) if row else None
+
+    def save_auth_config(self, project_id: str, profile: str, config: dict) -> None:
+        if profile not in ("USER", "ADMIN"):
+            raise ValueError("알 수 없는 인증 프로필입니다.")
+        from .user_auth import validate_login_config
+        validated = validate_login_config(config)
+        with self.connect() as db:
+            db.execute("""
+                INSERT INTO auth_configs (project_id,profile,endpoint,identifier_key,password_key)
+                VALUES (?,?,?,?,?)
+                ON CONFLICT(project_id,profile) DO UPDATE SET
+                  endpoint=excluded.endpoint,
+                  identifier_key=excluded.identifier_key,
+                  password_key=excluded.password_key
+            """, (project_id, profile, validated["endpoint"],
+                  validated["identifier_key"], validated["password_key"]))
