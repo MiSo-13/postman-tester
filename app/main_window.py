@@ -17,7 +17,7 @@ from .postman import parse_collection, parse_environment, preview_body, preview_
 from .templates import save_examples
 from .runner import execute
 from .reports import export_reports
-from .user_auth import user_login, admin_login, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
+from .user_auth import login_tokens, refresh_tokens, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
 from .request_overrides import endpoint_key, validate_raw_json
 
 
@@ -40,34 +40,29 @@ class RunWorker(QThread):
     def run(self):
         status = "COMPLETED"
         try:
-            user_token = None
-            if self.user_credentials and any(needs_user_token(e) for _, e in self.endpoints):
-                try:
-                    base_url = self.variables.get("baseUrl", "")
-                    user_token = user_login(
-                        base_url, *self.user_credentials,
-                        timeout=self.settings.values["default_timeout_seconds"],
-                        verify_ssl=self.settings.values["verify_ssl"],
-                        config=self.auth_configs.get("USER"))
-                    self.progress.emit("USER 로그인", "PASS")
-                except LoginError as exc:
-                    self.progress.emit("USER 로그인", f"ERROR: {exc}")
-                    status = "ERROR"
-                    return
-            admin_token = None
-            if self.admin_credentials and any(needs_admin_token(e) for _, e in self.endpoints):
-                try:
-                    admin_token = admin_login(
-                        self.variables.get("baseUrl", ""), *self.admin_credentials,
-                        timeout=self.settings.values["default_timeout_seconds"],
-                        verify_ssl=self.settings.values["verify_ssl"],
-                        config=self.auth_configs.get("ADMIN"))
-                    self.progress.emit("ADMIN 로그인", "PASS")
-                except LoginError as exc:
-                    self.progress.emit("ADMIN 로그인", f"ERROR: {exc}")
-                    status = "ERROR"
-                    return
+            sessions = {"USER": None, "ADMIN": None}
+            profiles = (
+                ("USER", self.user_credentials, needs_user_token),
+                ("ADMIN", self.admin_credentials, needs_admin_token),
+            )
+            for profile, credentials, checker in profiles:
+                if credentials and any(checker(e) for _, e in self.endpoints):
+                    try:
+                        sessions[profile] = login_tokens(
+                            profile, self.variables.get("baseUrl", ""), *credentials,
+                            timeout=self.settings.values["default_timeout_seconds"],
+                            verify_ssl=self.settings.values["verify_ssl"],
+                            config=self.auth_configs.get(profile))
+                        self.progress.emit(f"{profile} 로그인", "PASS")
+                    except LoginError as exc:
+                        self.progress.emit(f"{profile} 로그인", f"ERROR: {exc}")
+                        status = "ERROR"
+                        return
             for key, endpoint in self.endpoints:
+                selected_profile = ("USER" if needs_user_token(endpoint) else
+                                    "ADMIN" if needs_admin_token(endpoint) else None)
+                user_token = sessions["USER"][0] if sessions["USER"] else None
+                admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
                 result = execute(
                     endpoint, self.variables,
                     timeout=self.settings.values["default_timeout_seconds"],
@@ -76,6 +71,31 @@ class RunWorker(QThread):
                     raw_body_override=self.body_overrides.get(key),
                     user_access_token=user_token,
                     admin_access_token=admin_token)
+                # Only read-only requests may be automatically replayed after 401.
+                if (selected_profile and result.get("http_status") == 401
+                        and endpoint.method.upper() in ("GET", "HEAD", "OPTIONS")
+                        and sessions[selected_profile] and sessions[selected_profile][1]):
+                    try:
+                        sessions[selected_profile] = refresh_tokens(
+                            selected_profile, self.variables.get("baseUrl", ""),
+                            sessions[selected_profile][1],
+                            timeout=self.settings.values["default_timeout_seconds"],
+                            verify_ssl=self.settings.values["verify_ssl"])
+                        self.progress.emit(f"{selected_profile} 토큰 갱신", "PASS")
+                        user_token = sessions["USER"][0] if sessions["USER"] else None
+                        admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
+                        result = execute(
+                            endpoint, self.variables,
+                            timeout=self.settings.values["default_timeout_seconds"],
+                            verify_ssl=self.settings.values["verify_ssl"],
+                            allow_writes=self.settings.values["dangerous_methods_enabled"],
+                            raw_body_override=self.body_overrides.get(key),
+                            user_access_token=user_token,
+                            admin_access_token=admin_token)
+                    except LoginError as exc:
+                        self.progress.emit(f"{selected_profile} 토큰 갱신", f"ERROR: {exc}")
+                        result["status"] = "ERROR"
+                        result["detail"] = f"{selected_profile} 토큰 갱신 실패"
                 self.storage.add_result(
                     self.run_id, endpoint.name, endpoint.method, endpoint.url, **result)
                 self.progress.emit(endpoint.name, result["status"])

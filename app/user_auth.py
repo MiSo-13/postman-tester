@@ -76,17 +76,13 @@ def needs_user_token(endpoint) -> bool:
 def user_login(base_url: str, email: str, password: str, *,
                timeout: float = 20, verify_ssl: bool = True,
                config: dict | None = None) -> str:
-    return _login(base_url, email, password,
-                  **validate_login_config(config or DEFAULT_LOGIN_CONFIGS["USER"]),
-                  timeout=timeout, verify_ssl=verify_ssl)
+    return login_tokens("USER", base_url, email, password, timeout=timeout, verify_ssl=verify_ssl, config=config)[0]
 
 
 def admin_login(base_url: str, admin_id: str, password: str, *,
                 timeout: float = 20, verify_ssl: bool = True,
                 config: dict | None = None) -> str:
-    return _login(base_url, admin_id, password,
-                  **validate_login_config(config or DEFAULT_LOGIN_CONFIGS["ADMIN"]),
-                  timeout=timeout, verify_ssl=verify_ssl)
+    return login_tokens("ADMIN", base_url, admin_id, password, timeout=timeout, verify_ssl=verify_ssl, config=config)[0]
 
 
 def needs_admin_token(endpoint) -> bool:
@@ -96,3 +92,74 @@ def needs_admin_token(endpoint) -> bool:
     bearer = auth.get("bearer") or []
     return any(item.get("key") == "token" and item.get("value") == "{{adminAccessToken}}"
                for item in bearer if isinstance(item, dict))
+
+REFRESH_ENDPOINTS = {
+    "USER": "/api/auth/refresh",
+    "ADMIN": "/api/backoffice/auth/refresh",
+}
+
+
+def _tokens_from_response(response, *, require_refresh=False):
+    if response.status_code != 200:
+        raise LoginError(f"인증 API HTTP {response.status_code}")
+    try:
+        data = response.json()
+    except ValueError:
+        raise LoginError("인증 API의 응답이 JSON이 아닙니다.") from None
+    if not isinstance(data, dict) or data.get("success") is not True:
+        raise LoginError("인증 API의 success가 true가 아닙니다.")
+    result = data.get("data")
+    if not isinstance(result, dict):
+        raise LoginError("인증 API에 data 객체가 없습니다.")
+    access = result.get("accessToken")
+    refresh = result.get("refreshToken")
+    if not isinstance(access, str) or not access.strip():
+        raise LoginError("인증 API에 Access Token이 없습니다.")
+    access = re.sub(r"^Bearer\s+", "", access.strip(), flags=re.I)
+    if isinstance(refresh, str):
+        refresh = re.sub(r"^Bearer\s+", "", refresh.strip(), flags=re.I)
+    else:
+        refresh = None
+    if require_refresh and not refresh:
+        raise LoginError("로그인 응답에 Refresh Token이 없습니다.")
+    if any("\\r" in v or "\\n" in v for v in (access, refresh or "")):
+        raise LoginError("토큰 형식이 올바르지 않습니다.")
+    return access, refresh
+
+
+def login_tokens(profile: str, base_url: str, identifier: str, password: str, *,
+                 timeout: float = 20, verify_ssl: bool = True,
+                 config: dict | None = None) -> tuple[str, str | None]:
+    """Authenticate and keep both tokens in memory; never persist token values."""
+    if profile not in DEFAULT_LOGIN_CONFIGS:
+        raise LoginError("알 수 없는 로그인 유형입니다.")
+    if not base_url.startswith(("http://", "https://")):
+        raise LoginError("baseUrl은 HTTP(S) 주소여야 합니다.")
+    if not identifier or not password:
+        raise LoginError("로그인 계정정보를 입력하세요.")
+    cfg = validate_login_config(config or DEFAULT_LOGIN_CONFIGS[profile])
+    try:
+        with httpx.Client(timeout=timeout, verify=verify_ssl, follow_redirects=False) as client:
+            response = client.post(base_url.rstrip("/") + cfg["endpoint"],
+                                   json={cfg["identifier_key"]: identifier,
+                                         cfg["password_key"]: password})
+        return _tokens_from_response(response)
+    except httpx.HTTPError as exc:
+        raise LoginError(f"로그인 연결 실패: {type(exc).__name__}") from None
+
+
+def refresh_tokens(profile: str, base_url: str, refresh_token: str, *,
+                   timeout: float = 20, verify_ssl: bool = True) -> tuple[str, str]:
+    """Use refreshToken body; retain the previous refresh token if not rotated."""
+    if profile not in REFRESH_ENDPOINTS or not refresh_token:
+        raise LoginError("Refresh Token을 사용할 수 없습니다.")
+    if not base_url.startswith(("http://", "https://")):
+        raise LoginError("baseUrl은 HTTP(S) 주소여야 합니다.")
+    try:
+        with httpx.Client(timeout=timeout, verify=verify_ssl, follow_redirects=False) as client:
+            response = client.post(base_url.rstrip("/") + REFRESH_ENDPOINTS[profile],
+                                   json={"refreshToken": refresh_token})
+        access, rotated = _tokens_from_response(response)
+        return access, rotated or refresh_token
+    except httpx.HTTPError as exc:
+        raise LoginError(f"토큰 갱신 연결 실패: {type(exc).__name__}") from None
