@@ -53,6 +53,15 @@ class Storage:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(project_id, endpoint_key)
             );
+            CREATE TABLE IF NOT EXISTS scenarios (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id),
+                name TEXT NOT NULL,
+                steps_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_scenarios_project ON scenarios(project_id, name);
             CREATE TABLE IF NOT EXISTS test_runs (
                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
                 name TEXT NOT NULL, status TEXT NOT NULL,
@@ -219,3 +228,35 @@ class Storage:
                 ON CONFLICT(project_id,endpoint_key) DO UPDATE SET
                     rules_json=excluded.rules_json
             """, (project_id, endpoint_key, json.dumps(rules, ensure_ascii=False)))
+
+    def scenarios(self, project_id: str) -> list[dict]:
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT * FROM scenarios WHERE project_id=? ORDER BY name, created_at",
+                (project_id,))]
+
+    def save_scenario(self, project_id: str, name: str, steps: list, scenario_id: str | None = None) -> str:
+        from .scenarios import validate_steps
+        steps = validate_steps(steps)
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 100:
+            raise ValueError("시나리오 이름은 1~100자여야 합니다.")
+        if scenario_id is None:
+            scenario_id = str(uuid.uuid4())
+            with self.connect() as db:
+                db.execute(
+                    "INSERT INTO scenarios VALUES(?,?,?,?,?,?)",
+                    (scenario_id, project_id, name.strip(),
+                     json.dumps(steps), utc_now(), utc_now()))
+        else:
+            with self.connect() as db:
+                cursor = db.execute(
+                    "UPDATE scenarios SET name=?, steps_json=?, updated_at=? "
+                    "WHERE id=? AND project_id=?",
+                    (name.strip(), json.dumps(steps), utc_now(), scenario_id, project_id))
+                if cursor.rowcount != 1:
+                    raise ValueError("시나리오가 없거나 다른 프로젝트에 속합니다.")
+        return scenario_id
+
+    def delete_scenario(self, project_id: str, scenario_id: str):
+        with self.connect() as db:
+            db.execute("DELETE FROM scenarios WHERE id=? AND project_id=?", (scenario_id, project_id))

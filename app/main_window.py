@@ -19,6 +19,7 @@ from .runner import execute
 from .reports import export_reports
 from .user_auth import login_tokens, refresh_tokens, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
 from .request_overrides import endpoint_key, validate_raw_json
+from .scenarios import resolve_steps, validate_steps
 
 
 class RunWorker(QThread):
@@ -149,6 +150,7 @@ class MainWindow(QMainWindow):
             ("로그인 설정", self.configure_logins),
             ("응답 검증 규칙", self.configure_assertions),
             ("응답 변수 추출", self.configure_extractions),
+            ("시나리오 관리", self.manage_scenarios),
             ("테스트 실행", self.start_run),
         ]:
             button = QPushButton(label)
@@ -368,6 +370,52 @@ class MainWindow(QMainWindow):
             return
         self.statusBar().showMessage("추출 규칙을 저장했습니다. 변수 값은 실행 중에만 유지됩니다.")
 
+    def manage_scenarios(self):
+        project = self.current_project()
+        if not project or not self.endpoints:
+            QMessageBox.warning(self, "준비 필요", "프로젝트와 Collection을 선택하세요.")
+            return
+        saved = self.storage.scenarios(project)
+        labels = ["새 시나리오"] + [f"{x['name']} ({x['id'][:8]})" for x in saved]
+        choice, ok = QInputDialog.getItem(self, "시나리오 관리", "관리할 시나리오", labels, 0, False)
+        if not ok:
+            return
+        selection = labels.index(choice)
+        item = saved[selection - 1] if selection else None
+        if item:
+            decision = QMessageBox.question(
+                self, "시나리오 관리", "삭제하시겠습니까? 아니오를 누르면 편집합니다.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No |
+                QMessageBox.StandardButton.Cancel)
+            if decision == QMessageBox.StandardButton.Cancel:
+                return
+            if decision == QMessageBox.StandardButton.Yes:
+                self.storage.delete_scenario(project, item["id"])
+                return
+        name, ok = QInputDialog.getText(
+            self, "시나리오 이름", "이름", text=item["name"] if item else "")
+        if not ok:
+            return
+        steps = json.loads(item["steps_json"]) if item else self.endpoint_keys
+        numbers = [self.endpoint_keys.index(k) + 1 for k in steps if k in self.endpoint_keys]
+        lines = "\n".join(f"{i + 1}. {e.method} {e.name}" for i, e in enumerate(self.endpoints))
+        raw, ok = QInputDialog.getMultiLineText(
+            self, "실행 순서 편집",
+            "API 목록(번호):\n" + lines[:3500] + "\n\n실행할 번호를 쉼표로 구분:",
+            ", ".join(map(str, numbers)))
+        if not ok:
+            return
+        try:
+            indices = [int(x.strip()) for x in raw.split(",")]
+            if any(i < 1 or i > len(self.endpoint_keys) for i in indices):
+                raise ValueError("API 번호가 범위를 벗어났습니다.")
+            keys = validate_steps([self.endpoint_keys[i - 1] for i in indices], self.endpoint_keys)
+            self.storage.save_scenario(project, name, keys, item["id"] if item else None)
+        except (ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "시나리오 오류", str(exc))
+            return
+        self.statusBar().showMessage("시나리오가 저장되었습니다.")
+
     def download_examples(self):
         folder = QFileDialog.getExistingDirectory(self, "예제 JSON 저장 폴더")
         if folder:
@@ -447,12 +495,34 @@ class MainWindow(QMainWindow):
             return
         chosen = self.tree.selectedItems()
         index = chosen[0].data(0, Qt.ItemDataRole.UserRole) if chosen else None
-        indices = [index] if index is not None else list(range(len(self.endpoints)))
-        endpoints = [(self.endpoint_keys[i], self.endpoints[i]) for i in indices]
+        scenarios = self.storage.scenarios(self.current_project())
+        scenario_name = None
+        if scenarios and index is None:
+            labels = ["전체 Collection 순서"] + [
+                f"{s['name']} ({s['id'][:8]})" for s in scenarios]
+            choice, ok = QInputDialog.getItem(
+                self, "실행 시나리오", "실행할 시나리오 선택", labels, 0, False)
+            if not ok:
+                return
+            selection = labels.index(choice)
+            if selection:
+                entry = scenarios[selection - 1]
+                scenario_name = entry["name"]
+                try:
+                    endpoints = resolve_steps(
+                        json.loads(entry["steps_json"]), self.endpoint_keys, self.endpoints)
+                except ValueError as exc:
+                    QMessageBox.warning(self, "시나리오 오류", str(exc))
+                    return
+            else:
+                endpoints = list(zip(self.endpoint_keys, self.endpoints))
+        else:
+            indices = [index] if index is not None else list(range(len(self.endpoints)))
+            endpoints = [(self.endpoint_keys[i], self.endpoints[i]) for i in indices]
         message = f"API {len(endpoints)}개를 실행합니다.\n쓰기 API는 기본적으로 SKIPPED 처리됩니다.\n계속하시겠습니까?"
         if QMessageBox.question(self, "테스트 시작", message) != QMessageBox.StandardButton.Yes:
             return
-        run_id = self.storage.create_run(self.current_project(), "기본 실행")
+        run_id = self.storage.create_run(self.current_project(), scenario_name or "기본 실행")
         self.log_text.append(f"Run ID: {run_id}")
         user_credentials = None
         if any(needs_user_token(e) for _, e in endpoints):
