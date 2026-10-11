@@ -24,23 +24,25 @@ class RunWorker(QThread):
     progress = pyqtSignal(str, str)
     finished_run = pyqtSignal(str)
 
-    def __init__(self, storage, run_id, endpoints, variables, settings):
+    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides):
         super().__init__()
         self.storage = storage
         self.run_id = run_id
         self.endpoints = endpoints
         self.variables = variables
         self.settings = settings
+        self.body_overrides = body_overrides
 
     def run(self):
         status = "COMPLETED"
         try:
-            for endpoint in self.endpoints:
+            for key, endpoint in self.endpoints:
                 result = execute(
                     endpoint, self.variables,
                     timeout=self.settings.values["default_timeout_seconds"],
                     verify_ssl=self.settings.values["verify_ssl"],
-                    allow_writes=self.settings.values["dangerous_methods_enabled"])
+                    allow_writes=self.settings.values["dangerous_methods_enabled"],
+                    raw_body_override=self.body_overrides.get(key))
                 self.storage.add_result(
                     self.run_id, endpoint.name, endpoint.method, endpoint.url, **result)
                 self.progress.emit(endpoint.name, result["status"])
@@ -310,13 +312,20 @@ class MainWindow(QMainWindow):
             return
         chosen = self.tree.selectedItems()
         index = chosen[0].data(0, Qt.ItemDataRole.UserRole) if chosen else None
-        endpoints = [self.endpoints[index]] if index is not None else list(self.endpoints)
+        indices = [index] if index is not None else list(range(len(self.endpoints)))
+        endpoints = [(self.endpoint_keys[i], self.endpoints[i]) for i in indices]
         message = f"API {len(endpoints)}개를 실행합니다.\n쓰기 API는 기본적으로 SKIPPED 처리됩니다.\n계속하시겠습니까?"
         if QMessageBox.question(self, "테스트 시작", message) != QMessageBox.StandardButton.Yes:
             return
         run_id = self.storage.create_run(self.current_project(), "기본 실행")
         self.log_text.append(f"Run ID: {run_id}")
-        self.worker = RunWorker(self.storage, run_id, endpoints, self.environment.copy(), self.settings)
+        body_overrides = {
+            key: stored for key, _ in endpoints
+            if (stored := self.storage.get_request_override(self.current_project(), key)) is not None
+        }
+        self.worker = RunWorker(
+            self.storage, run_id, endpoints, self.environment.copy(), self.settings,
+            body_overrides)
         self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
         self.worker.finished_run.connect(self.run_finished)
         self.worker.start()
