@@ -31,13 +31,20 @@ def execute(endpoint, variables: dict, timeout: float = 20,
             user_access_token: str | None = None,
             admin_access_token: str | None = None,
             file_root: Path | None = None,
-            assertions: list | None = None) -> dict:
+            assertions: list | None = None,
+            extraction_rules: list | None = None,
+            captured_variables: dict | None = None) -> dict:
     """Only send supported request shapes; all checks precede the HTTP call."""
     from .assertions import validate_rules
     try:
         assertions = validate_rules(assertions or [])
     except ValueError:
         return _blocked("응답 검증 규칙이 올바르지 않습니다.")
+    from .extractions import validate_extractions
+    try:
+        extraction_rules = validate_extractions(extraction_rules or [])
+    except ValueError:
+        return _blocked("변수 추출 규칙이 올바르지 않습니다.")
     method = endpoint.method.upper()
     if method not in ("GET", "HEAD", "OPTIONS") and not allow_writes:
         return {"status": "SKIPPED", "http_status": None, "elapsed_ms": None,
@@ -115,6 +122,15 @@ def execute(endpoint, variables: dict, timeout: float = 20,
         from .assertions import evaluate_response
         passed, message = evaluate_response(response, assertions)
         http_ok = 200 <= response.status_code < 300
+        if passed and http_ok and extraction_rules:
+            from .extractions import extract_values
+            try:
+                values = extract_values(response, extraction_rules)
+            except ValueError:
+                return {"status": "FAIL", "http_status": response.status_code,
+                        "elapsed_ms": elapsed, "detail": "응답 변수 추출 실패"}
+            if captured_variables is not None:
+                captured_variables.update(values)
         return {
             "status": "PASS" if passed and (http_ok or any(
                 rule["type"] == "status" for rule in assertions)) else "FAIL",

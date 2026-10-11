@@ -34,6 +34,12 @@ class Storage:
                 password_key TEXT NOT NULL,
                 PRIMARY KEY(project_id, profile)
             );
+            CREATE TABLE IF NOT EXISTS response_extractions (
+                project_id TEXT NOT NULL REFERENCES projects(id),
+                endpoint_key TEXT NOT NULL,
+                rules_json TEXT NOT NULL,
+                PRIMARY KEY(project_id, endpoint_key)
+            );
             CREATE TABLE IF NOT EXISTS response_assertions (
                 project_id TEXT NOT NULL REFERENCES projects(id),
                 endpoint_key TEXT NOT NULL,
@@ -192,6 +198,24 @@ class Storage:
             db.execute("""
                 INSERT INTO response_assertions(project_id,endpoint_key,rules_json)
                 VALUES(?,?,?)
+                ON CONFLICT(project_id,endpoint_key) DO UPDATE SET
+                    rules_json=excluded.rules_json
+            """, (project_id, endpoint_key, json.dumps(rules, ensure_ascii=False)))
+
+    def get_response_extractions(self, project_id: str, endpoint_key: str) -> list:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT rules_json FROM response_extractions WHERE project_id=? AND endpoint_key=?",
+                (project_id, endpoint_key)).fetchone()
+            return json.loads(row["rules_json"]) if row else []
+
+    def save_response_extractions(self, project_id: str, endpoint_key: str, rules: list):
+        from .extractions import validate_extractions
+        rules = validate_extractions(rules)
+        with self.connect() as db:
+            db.execute("""
+                INSERT INTO response_extractions(project_id, endpoint_key, rules_json)
+                VALUES (?,?,?)
                 ON CONFLICT(project_id,endpoint_key) DO UPDATE SET
                     rules_json=excluded.rules_json
             """, (project_id, endpoint_key, json.dumps(rules, ensure_ascii=False)))
