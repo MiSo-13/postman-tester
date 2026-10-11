@@ -2,7 +2,7 @@
 
 Postman Collection/Environment를 Import하여 API를 확인하고 안전한 smoke test를 실행하는 PyQt6 데스크톱 도구입니다.
 
-> 현재는 첫 개발 버전입니다. POST/PUT/PATCH/DELETE, 인증, JSON Body, multipart 및 Postman JavaScript 실행은 아직 완전 지원하지 않습니다. 쓰기 API는 기본적으로 건너뜁니다.
+> 단계별 개발 중입니다. Raw JSON Body 전송은 후속 PR #3에서 지원하지만 USER/ADMIN 인증, multipart, Postman JavaScript 실행은 아직 미지원입니다. 쓰기 API는 기본적으로 건너뜁니다.
 
 ## 시작
 
@@ -52,3 +52,15 @@ pytest -q
 ```
 
 [단계별 개발 계획](docs/IMPLEMENTATION_PLAN.md)
+
+## Raw JSON Body 실행 (PR #3)
+
+1. 프로젝트에 Collection과 Environment를 가져옵니다.
+2. API를 선택해 **JSON Body 편집** 탭에서 수정하고 **JSON 수정 저장**을 누릅니다.
+3. 개발/테스트용 서버 주소와 데이터가 올바른지 검토합니다.
+4. 쓰기 API 전송을 명시적으로 허용하려면 실행 폴더의 `setting.json`에서 `dangerous_methods_enabled`를 `true`로 변경한 후 앱을 재시작합니다.
+5. 선택 API를 실행합니다. 실행 전 저장된 Body가 있으면 원본보다 우선 적용하고, JSONC 주석 제거와 변수 치환 후 `application/json`으로 전송합니다.
+
+**주의:** 이 설정은 POST/PUT/PATCH/DELETE 요청 전송도 허용하므로 격리된 테스트 환경에서만 사용하세요.
+인증, multipart 및 사용자 정의 JavaScript 처리는 지원하지 않으며, 관련 요청은 차단됩니다.
+편집 내용을 저장하지 않으면 실행하지 않도록 UI에서 경고합니다. JSON Body는 현재 응답 검증 규칙이 아니라 HTTP 2xx로 성공 여부를 판정합니다.
