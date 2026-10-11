@@ -4,8 +4,6 @@ import re
 
 import httpx
 
-from .runner import substitute
-from .request_overrides import strip_json_comments
 
 
 class LoginError(Exception):
