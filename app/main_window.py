@@ -536,7 +536,7 @@ class MainWindow(QMainWindow):
         self.body_editor.blockSignals(False)
         self.body_message.setText("원본으로 복원되었습니다.")
 
-    def start_run(self):
+    def start_run(self, checked=False, *, retry_endpoints=None):
         if self.body_message.text() == "저장되지 않은 수정사항":
             QMessageBox.warning(
                 self, "저장되지 않은 JSON",
@@ -545,32 +545,36 @@ class MainWindow(QMainWindow):
         if not self.current_project() or not self.endpoints:
             QMessageBox.warning(self, "실행 불가", "프로젝트와 Collection을 선택하세요.")
             return
-        chosen = self.tree.selectedItems()
-        index = chosen[0].data(0, Qt.ItemDataRole.UserRole) if chosen else None
-        scenarios = self.storage.scenarios(self.current_project())
-        scenario_name = None
-        if scenarios and index is None:
-            labels = ["전체 Collection 순서"] + [
-                f"{s['name']} ({s['id'][:8]})" for s in scenarios]
-            choice, ok = QInputDialog.getItem(
-                self, "실행 시나리오", "실행할 시나리오 선택", labels, 0, False)
-            if not ok:
-                return
-            selection = labels.index(choice)
-            if selection:
-                entry = scenarios[selection - 1]
-                scenario_name = entry["name"]
-                try:
-                    endpoints = resolve_steps(
-                        json.loads(entry["steps_json"]), self.endpoint_keys, self.endpoints)
-                except ValueError as exc:
-                    QMessageBox.warning(self, "시나리오 오류", str(exc))
-                    return
-            else:
-                endpoints = list(zip(self.endpoint_keys, self.endpoints))
+        if retry_endpoints is not None:
+            endpoints = retry_endpoints
+            scenario_name = '실패 읽기 API 재실행'
         else:
-            indices = [index] if index is not None else list(range(len(self.endpoints)))
-            endpoints = [(self.endpoint_keys[i], self.endpoints[i]) for i in indices]
+            chosen = self.tree.selectedItems()
+            index = chosen[0].data(0, Qt.ItemDataRole.UserRole) if chosen else None
+            scenarios = self.storage.scenarios(self.current_project())
+            scenario_name = None
+            if scenarios and index is None:
+                labels = ["전체 Collection 순서"] + [
+                    f"{s['name']} ({s['id'][:8]})" for s in scenarios]
+                choice, ok = QInputDialog.getItem(
+                    self, "실행 시나리오", "실행할 시나리오 선택", labels, 0, False)
+                if not ok:
+                    return
+                selection = labels.index(choice)
+                if selection:
+                    entry = scenarios[selection - 1]
+                    scenario_name = entry["name"]
+                    try:
+                        endpoints = resolve_steps(
+                            json.loads(entry["steps_json"]), self.endpoint_keys, self.endpoints)
+                    except ValueError as exc:
+                        QMessageBox.warning(self, "시나리오 오류", str(exc))
+                        return
+                else:
+                    endpoints = list(zip(self.endpoint_keys, self.endpoints))
+            else:
+                indices = [index] if index is not None else list(range(len(self.endpoints)))
+                endpoints = [(self.endpoint_keys[i], self.endpoints[i]) for i in indices]
         message = f"API {len(endpoints)}개를 실행합니다.\n쓰기 API는 기본적으로 SKIPPED 처리됩니다.\n계속하시겠습니까?"
         if QMessageBox.question(self, "테스트 시작", message) != QMessageBox.StandardButton.Yes:
             return
@@ -653,6 +657,26 @@ class MainWindow(QMainWindow):
         if self.current_project():
             for run in self.storage.runs(self.current_project()):
                 self.history.addItem(f"{run['started_at']}  [{run['status']}]  {run['id']}")
+
+    def retry_failed(self):
+        if hasattr(self, "worker") and self.worker.isRunning():
+            QMessageBox.warning(self, "실행 중", "현재 실행이 끝난 후 재실행하세요.")
+            return
+        current = self.history.currentItem()
+        if current is None:
+            QMessageBox.warning(self, "회차 선택 필요", "이전 실행 회차를 먼저 선택하세요.")
+            return
+        run_id = current.text().split()[-1]
+        rows = self.storage.results(run_id)
+        selected_rows = sorted(set(index.row() for index in self.result_table.selectedIndexes()))
+        if selected_rows:
+            rows = [rows[i] for i in selected_rows]
+        candidates = retry_candidates(rows, self.endpoints, self.endpoint_keys)
+        if not candidates:
+            QMessageBox.warning(self, "재실행 불가",
+                "실패한 GET/HEAD/OPTIONS 요청만 재실행할 수 있습니다.")
+            return
+        self.start_run(retry_endpoints=candidates)
 
     def show_history(self, current, previous):
         self.report_list.clear()
