@@ -70,7 +70,8 @@ class RunWorker(QThread):
                     allow_writes=self.settings.values["dangerous_methods_enabled"],
                     raw_body_override=self.body_overrides.get(key),
                     user_access_token=user_token,
-                    admin_access_token=admin_token)
+                    admin_access_token=admin_token,
+                    file_root=self.settings.root / self.settings.values["file_root"])
                 # Only read-only requests may be automatically replayed after 401.
                 if (selected_profile and result.get("http_status") == 401
                         and endpoint.method.upper() in ("GET", "HEAD", "OPTIONS")
