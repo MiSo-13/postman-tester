@@ -21,6 +21,7 @@ from .user_auth import login_tokens, refresh_tokens, needs_user_token, needs_adm
 from .request_overrides import endpoint_key, validate_raw_json
 from .scenarios import resolve_steps, validate_steps, should_stop
 from .retry import retry_candidates
+from .run_comparison import compare_runs
 
 
 class RunWorker(QThread):
@@ -158,6 +159,7 @@ class MainWindow(QMainWindow):
             ("응답 검증 규칙", self.configure_assertions),
             ("응답 변수 추출", self.configure_extractions),
             ("시나리오 관리", self.manage_scenarios),
+            ("실행 회차 비교", self.compare_run_history),
             ("테스트 실행", self.start_run),
         ]:
             button = QPushButton(label)
@@ -657,6 +659,57 @@ class MainWindow(QMainWindow):
         if self.current_project():
             for run in self.storage.runs(self.current_project()):
                 self.history.addItem(f"{run['started_at']}  [{run['status']}]  {run['id']}")
+
+    def compare_run_history(self):
+        if not self.current_project():
+            QMessageBox.warning(self, "프로젝트 필요", "프로젝트를 선택하세요.")
+            return
+        runs = [r for r in self.storage.runs(self.current_project())
+                if r["status"] != "PENDING"]
+        if len(runs) < 2:
+            QMessageBox.warning(self, "회차 부족", "완료된 실행 회차가 최소 2개 필요합니다.")
+            return
+        labels = [f"{r['started_at']} [{r['status']}] {r['name']} ({r['id'][:8]})"
+                  for r in runs]
+        older, ok = QInputDialog.getItem(
+            self, "회차 비교", "기준 회차 (이전)", labels, 1, False)
+        if not ok:
+            return
+        newer, ok = QInputDialog.getItem(
+            self, "회차 비교", "비교 회차 (이후)", labels, 0, False)
+        if not ok:
+            return
+        i, j = labels.index(older), labels.index(newer)
+        if i == j:
+            QMessageBox.warning(self, "회차 선택 오류", "서로 다른 회차를 선택하세요.")
+            return
+        changes = compare_runs(
+            self.storage.results(runs[i]["id"]),
+            self.storage.results(runs[j]["id"]))
+        dialog = QDialog(self)
+        dialog.setWindowTitle("실행 회차 비교")
+        dialog.resize(900, 550)
+        layout = QVBoxLayout(dialog)
+        summary = {}
+        for item in changes:
+            summary[item["change"]] = summary.get(item["change"], 0) + 1
+        layout.addWidget(QLabel(" | ".join(
+            f"{k}: {v}" for k, v in sorted(summary.items())) or "비교 대상 없음"))
+        table = QTableWidget(len(changes), 7)
+        table.setHorizontalHeaderLabels(
+            ["API", "Method", "순번", "기준", "비교", "변화", "시간차(ms)"])
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        for row, item in enumerate(changes):
+            values = [item["name"], item["method"], item["occurrence"],
+                      item["before"], item["after"], item["change"], item["delta_ms"]]
+            for col, value in enumerate(values):
+                table.setItem(row, col, QTableWidgetItem(
+                    "—" if value is None else str(value)))
+        layout.addWidget(table)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def retry_failed(self):
         if hasattr(self, "worker") and self.worker.isRunning():
