@@ -165,6 +165,10 @@ class RunWorker(QThread):
                     executed.append({"status": result["status"],
                                      "http_status": result.get("http_status"),
                                      "method": endpoint.method})
+                    # The explicit stop-on-failure policy takes precedence over AI reordering.
+                    if should_stop(result["status"], self.stop_on_failure):
+                        status = "STOPPED"
+                        break
                     if (self.adaptive_ai and pending and ai_calls < self.adaptive_ai["max_calls"]
                             and result["status"] in ("FAIL", "ERROR", "BLOCKED")
                             and not self.cancel_event.is_set()):
@@ -183,9 +187,6 @@ class RunWorker(QThread):
                             pending = move_next(pending, decision["next_id"])
                         except ValueError:
                             self.ai_decision.emit("AI 재계획 불가: 기존 승인 순서대로 계속합니다.")
-                    if should_stop(result["status"], self.stop_on_failure):
-                        status = "STOPPED"
-                        break
         except Exception as exc:
             status = "ERROR"
             self.progress.emit("실행 오류", str(exc))
