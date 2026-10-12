@@ -20,7 +20,7 @@ def candidates_from_preview(preview):
     def visit(node, path="", depth=0):
         if depth > 16 or len(found) >= 200:
             return
-        if path and node not in MASKS if isinstance(node, str) else bool(path):
+        if path:
             try:
                 path_parts(path)
             except ValueError:
@@ -44,7 +44,7 @@ def rule_from_candidate(path, value, kind):
     if kind == "exists":
         rule = {"type": "exists", "path": path}
     elif kind == "value_type":
-        if value in MASKS if isinstance(value, str) else False:
+        if isinstance(value, str) and value in MASKS:
             raise ValueError("마스킹된 값은 타입을 확정할 수 없습니다.")
         if value is None:
             name = "null"
