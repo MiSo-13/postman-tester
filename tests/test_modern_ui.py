@@ -1,4 +1,5 @@
 """Modern UI layout, filtering, action preservation, and dashboard metrics."""
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QTreeWidgetItem, QPushButton
 
 from app.main_window import MainWindow
@@ -15,6 +16,7 @@ def test_components_and_search_filter():
     parent = QTreeWidgetItem(["Auth", ""])
     login = QTreeWidgetItem(["POST /login", "POST"])
     profile = QTreeWidgetItem(["GET /profile", "GET"])
+    login.setData(0, Qt.ItemDataRole.UserRole + 1, "{{baseUrl}}/api/auth/login")
     parent.addChild(login)
     parent.addChild(profile)
     explorer.tree.addTopLevelItem(parent)
@@ -22,6 +24,9 @@ def test_components_and_search_filter():
     assert not parent.isHidden()
     assert login.isHidden()
     assert not profile.isHidden()
+    explorer.search.setText("/api/auth/login")
+    assert not login.isHidden()
+    assert profile.isHidden()
     explorer.search.clear()
     assert not login.isHidden()
     assert not profile.isHidden()
