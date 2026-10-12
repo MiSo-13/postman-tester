@@ -1,6 +1,8 @@
 """Initial functional PyQt6 shell with import, safe test runs and persistent history."""
 import json
 import sys
+import httpx
+from threading import Event
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
@@ -8,7 +10,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTreeWidget, QTreeWidgetItem, QTextEdit, QLabel,
     QComboBox, QFileDialog, QMessageBox, QInputDialog, QSplitter,
-    QTabWidget, QListWidget, QListWidgetItem, QCheckBox, QLineEdit, QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem, QAbstractItemView
+    QTabWidget, QListWidget, QListWidgetItem, QCheckBox, QLineEdit, QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem, QAbstractItemView, QProgressBar
 )
 
 from .settings import Settings
@@ -46,6 +48,10 @@ class RunWorker(QThread):
         self.response_rules = response_rules or {}
         self.extraction_rules = extraction_rules or {}
         self.stop_on_failure = stop_on_failure
+        self.cancel_event = Event()
+
+    def cancel(self):
+        self.cancel_event.set()
 
     def run(self):
         status = "COMPLETED"
@@ -68,58 +74,69 @@ class RunWorker(QThread):
                         self.progress.emit(f"{profile} 로그인", f"ERROR: {exc}")
                         status = "ERROR"
                         return
-            for step_index, (key, endpoint) in enumerate(self.endpoints, start=1):
-                selected_profile = ("USER" if needs_user_token(endpoint) else
-                                    "ADMIN" if needs_admin_token(endpoint) else None)
-                user_token = sessions["USER"][0] if sessions["USER"] else None
-                admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
-                result = execute(
-                    endpoint, self.variables,
-                    timeout=self.settings.values["default_timeout_seconds"],
-                    verify_ssl=self.settings.values["verify_ssl"],
-                    allow_writes=self.settings.values["dangerous_methods_enabled"],
-                    raw_body_override=self.body_overrides.get(key),
-                    user_access_token=user_token,
-                    admin_access_token=admin_token,
-                    file_root=self.settings.root / self.settings.values["file_root"],
-                    assertions=self.response_rules.get(key, []),
-                    extraction_rules=self.extraction_rules.get(key, []),
-                    captured_variables=self.variables)
-                # Only read-only requests may be automatically replayed after 401.
-                if (selected_profile and result.get("http_status") == 401
-                        and endpoint.method.upper() in ("GET", "HEAD", "OPTIONS")
-                        and sessions[selected_profile] and sessions[selected_profile][1]):
-                    try:
-                        sessions[selected_profile] = refresh_tokens(
-                            selected_profile, self.variables.get("baseUrl", ""),
-                            sessions[selected_profile][1],
-                            timeout=self.settings.values["default_timeout_seconds"],
-                            verify_ssl=self.settings.values["verify_ssl"])
-                        self.progress.emit(f"{selected_profile} 토큰 갱신", "PASS")
-                        user_token = sessions["USER"][0] if sessions["USER"] else None
-                        admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
-                        result = execute(
-                            endpoint, self.variables,
-                            timeout=self.settings.values["default_timeout_seconds"],
-                            verify_ssl=self.settings.values["verify_ssl"],
-                            allow_writes=self.settings.values["dangerous_methods_enabled"],
-                            raw_body_override=self.body_overrides.get(key),
-                            user_access_token=user_token,
-                            admin_access_token=admin_token,
-                            assertions=self.response_rules.get(key, []),
-                            extraction_rules=self.extraction_rules.get(key, []),
-                            captured_variables=self.variables)
-                    except LoginError as exc:
-                        self.progress.emit(f"{selected_profile} 토큰 갱신", f"ERROR: {exc}")
-                        result["status"] = "ERROR"
-                        result["detail"] = f"{selected_profile} 토큰 갱신 실패"
-                self.storage.add_result(
-                    self.run_id, endpoint.name, endpoint.method, endpoint.url, **result)
-                self.progress.emit(endpoint.name, result["status"])
-                self.step_result.emit(step_index, len(self.endpoints), endpoint.name, result["status"])
-                if should_stop(result["status"], self.stop_on_failure):
-                    status = "STOPPED"
-                    break
+            with httpx.Client(timeout=self.settings.values["default_timeout_seconds"],
+                             verify=self.settings.values["verify_ssl"],
+                             follow_redirects=False) as client:
+                for step_index, (key, endpoint) in enumerate(self.endpoints, start=1):
+                    if self.cancel_event.is_set():
+                        status = "CANCELLED"
+                        break
+                    selected_profile = ("USER" if needs_user_token(endpoint) else
+                                        "ADMIN" if needs_admin_token(endpoint) else None)
+                    user_token = sessions["USER"][0] if sessions["USER"] else None
+                    admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
+                    result = execute(
+                        endpoint, self.variables,
+                        timeout=self.settings.values["default_timeout_seconds"],
+                        verify_ssl=self.settings.values["verify_ssl"],
+                        allow_writes=self.settings.values["dangerous_methods_enabled"],
+                        raw_body_override=self.body_overrides.get(key),
+                        user_access_token=user_token,
+                        admin_access_token=admin_token,
+                        file_root=self.settings.root / self.settings.values["file_root"],
+                        assertions=self.response_rules.get(key, []),
+                        extraction_rules=self.extraction_rules.get(key, []),
+                        captured_variables=self.variables,
+                        client=client)
+                    # Only read-only requests may be automatically replayed after 401.
+                    if (not self.cancel_event.is_set() and selected_profile and result.get("http_status") == 401
+                            and endpoint.method.upper() in ("GET", "HEAD", "OPTIONS")
+                            and sessions[selected_profile] and sessions[selected_profile][1]):
+                        try:
+                            sessions[selected_profile] = refresh_tokens(
+                                selected_profile, self.variables.get("baseUrl", ""),
+                                sessions[selected_profile][1],
+                                timeout=self.settings.values["default_timeout_seconds"],
+                                verify_ssl=self.settings.values["verify_ssl"])
+                            self.progress.emit(f"{selected_profile} 토큰 갱신", "PASS")
+                            user_token = sessions["USER"][0] if sessions["USER"] else None
+                            admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
+                            result = execute(
+                                endpoint, self.variables,
+                                timeout=self.settings.values["default_timeout_seconds"],
+                                verify_ssl=self.settings.values["verify_ssl"],
+                                allow_writes=self.settings.values["dangerous_methods_enabled"],
+                                raw_body_override=self.body_overrides.get(key),
+                                user_access_token=user_token,
+                                admin_access_token=admin_token,
+                                assertions=self.response_rules.get(key, []),
+                                extraction_rules=self.extraction_rules.get(key, []),
+                                captured_variables=self.variables,
+                                client=client)
+                        except LoginError as exc:
+                            self.progress.emit(f"{selected_profile} 토큰 갱신", f"ERROR: {exc}")
+                            result["status"] = "ERROR"
+                            result["detail"] = f"{selected_profile} 토큰 갱신 실패"
+                    self.storage.add_result(
+                        self.run_id, endpoint.name, endpoint.method, endpoint.url, **result)
+                    self.progress.emit(endpoint.name, result["status"])
+                    self.step_result.emit(step_index, len(self.endpoints), endpoint.name, result["status"])
+                    if self.cancel_event.is_set():
+                        status = "CANCELLED"
+                        break
+                    if should_stop(result["status"], self.stop_on_failure):
+                        status = "STOPPED"
+                        break
         except Exception as exc:
             status = "ERROR"
             self.progress.emit("실행 오류", str(exc))
@@ -170,6 +187,16 @@ class MainWindow(QMainWindow):
             button.clicked.connect(callback)
             top.addWidget(button)
         layout.addLayout(top)
+        run_controls = QHBoxLayout()
+        self.run_progress = QProgressBar()
+        self.run_progress.setRange(0, 100)
+        self.run_progress.setValue(0)
+        self.cancel_button = QPushButton("실행 취소")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.clicked.connect(self.cancel_run)
+        run_controls.addWidget(self.run_progress)
+        run_controls.addWidget(self.cancel_button)
+        layout.addLayout(run_controls)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.tree = QTreeWidget()
@@ -542,7 +569,16 @@ class MainWindow(QMainWindow):
         self.body_editor.blockSignals(False)
         self.body_message.setText("원본으로 복원되었습니다.")
 
+    def cancel_run(self):
+        if hasattr(self, "worker") and self.worker.isRunning():
+            self.worker.cancel()
+            self.cancel_button.setEnabled(False)
+            self.statusBar().showMessage("취소 요청됨: 현재 HTTP 요청 종료 후 중단")
+
     def start_run(self, checked=False, *, retry_endpoints=None):
+        if hasattr(self, "worker") and self.worker.isRunning():
+            QMessageBox.warning(self, "실행 중", "이미 실행 중인 작업이 있습니다.")
+            return
         if self.body_message.text() == "저장되지 않은 수정사항":
             QMessageBox.warning(
                 self, "저장되지 않은 JSON",
@@ -644,12 +680,17 @@ class MainWindow(QMainWindow):
             body_overrides, user_credentials, admin_credentials, auth_configs, response_rules, extraction_rules,
             stop_on_failure=stop_on_failure)
         self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
-        self.worker.step_result.connect(lambda i, total, name, state: self.log_text.append(f'단계 {i}/{total}: [{state}] {name}'))
+        self.worker.step_result.connect(lambda i, total, name, state: (
+            self.run_progress.setValue(round(i / total * 100)),
+            self.log_text.append(f"단계 {i}/{total}: [{state}] {name}")))
         self.worker.finished_run.connect(self.run_finished)
+        self.run_progress.setValue(0)
+        self.cancel_button.setEnabled(True)
         self.worker.start()
         self.statusBar().showMessage("테스트 실행 중")
 
     def run_finished(self, run_id):
+        self.cancel_button.setEnabled(False)
         try:
             paths = export_reports(self.storage, run_id, self.settings.data_path() / "reports" / run_id)
             self.log_text.append("보고서 보존: " + ", ".join(map(str, paths)))
