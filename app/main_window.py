@@ -89,18 +89,18 @@ class RunWorker(QThread):
                     admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
                     def request_once():
                         return execute(
-                        endpoint, self.variables,
-                        timeout=self.settings.values["default_timeout_seconds"],
-                        verify_ssl=self.settings.values["verify_ssl"],
-                        allow_writes=self.settings.values["dangerous_methods_enabled"],
-                        raw_body_override=self.body_overrides.get(key),
-                        user_access_token=user_token,
-                        admin_access_token=admin_token,
-                        file_root=self.settings.root / self.settings.values["file_root"],
-                        assertions=self.response_rules.get(key, []),
-                        extraction_rules=self.extraction_rules.get(key, []),
-                        captured_variables=self.variables,
-                        client=client)
+                            endpoint, self.variables,
+                            timeout=self.settings.values["default_timeout_seconds"],
+                            verify_ssl=self.settings.values["verify_ssl"],
+                            allow_writes=self.settings.values["dangerous_methods_enabled"],
+                            raw_body_override=self.body_overrides.get(key),
+                            user_access_token=user_token,
+                            admin_access_token=admin_token,
+                            file_root=self.settings.root / self.settings.values["file_root"],
+                            assertions=self.response_rules.get(key, []),
+                            extraction_rules=self.extraction_rules.get(key, []),
+                            captured_variables=self.variables,
+                            client=client)
                     result = execute_with_retries(
                         request_once, endpoint, self.retry_policy,
                         cancelled=self.cancel_event.is_set)
