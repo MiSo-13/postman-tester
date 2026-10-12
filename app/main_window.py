@@ -470,6 +470,9 @@ class MainWindow(QMainWindow):
         if environment:
             doc = json.loads(environment["content"])
             _, self.environment = clean_environment(doc)
+        saved_base_url = self.storage.get_project_base_url(project)
+        if saved_base_url:
+            self.environment["baseUrl"] = saved_base_url
         self.refresh_history()
 
     def load_collection_document(self, document):
@@ -542,11 +545,13 @@ class MainWindow(QMainWindow):
             dialog = AuthProfileDialog(
                 profile, self.endpoints, config, options,
                 self.session_credentials.get(profile),
-                self.environment.get("baseUrl", ""),
+                self.storage.get_project_base_url(project) or self.environment.get("baseUrl", ""),
                 self.settings.values["default_timeout_seconds"],
                 self.settings.values["verify_ssl"], self)
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
+            self.storage.save_project_base_url(project, dialog.base_url)
+            self.environment["baseUrl"] = dialog.base_url
             self.storage.save_auth_config(project, profile, dialog.config)
             self.storage.save_auth_profile_options(project, profile, dialog.options)
             self.session_credentials[profile] = dialog.credentials
