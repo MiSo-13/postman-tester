@@ -28,6 +28,7 @@ from .comparison_reports import export_comparison, summarize
 from .history_dashboard import build_dashboard
 from .trend_chart import TrendChart
 from .retry_policy import RetryPolicy, execute_with_retries
+from .themes import THEMES, validate_theme, apply_theme
 
 
 class RunWorker(QThread):
@@ -158,6 +159,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.settings = Settings()
+        self.system_palette = QApplication.palette()
+        try:
+            self.theme = validate_theme(self.settings.values["theme"])
+        except ValueError:
+            self.theme = "system"
+        apply_theme(QApplication.instance(), self.theme, self.system_palette)
         self.storage = Storage(self.settings.data_path())
         self.endpoints = []
         self.environment = {}
@@ -180,6 +187,13 @@ class MainWindow(QMainWindow):
         self.projects.currentIndexChanged.connect(self.project_changed)
         top.addWidget(QLabel("프로젝트"))
         top.addWidget(self.projects, 2)
+        top.addWidget(QLabel("테마"))
+        self.theme_selector = QComboBox()
+        for label, key in (("시스템", "system"), ("라이트", "light"), ("다크", "dark")):
+            self.theme_selector.addItem(label, key)
+        self.theme_selector.setCurrentIndex(self.theme_selector.findData(self.theme))
+        self.theme_selector.currentIndexChanged.connect(self.change_theme)
+        top.addWidget(self.theme_selector)
         for label, callback in [
             ("새 프로젝트", self.add_project), ("Collection Import", self.import_collection),
             ("Environment Import", self.import_environment),
@@ -262,6 +276,16 @@ class MainWindow(QMainWindow):
         splitter.setSizes([420, 720])
         layout.addWidget(splitter)
         self.statusBar().showMessage("Collection을 가져와 시작하세요.")
+
+    def change_theme(self, _=None):
+        theme = self.theme_selector.currentData()
+        if theme is None or theme == self.theme:
+            return
+        validate_theme(theme)
+        apply_theme(QApplication.instance(), theme, self.system_palette)
+        self.theme = theme
+        self.settings.set("theme", theme)
+        self.statusBar().showMessage(f"테마가 변경되었습니다: {self.theme_selector.currentText()}")
 
     def current_project(self):
         return self.projects.currentData()
