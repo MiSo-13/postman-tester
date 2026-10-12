@@ -149,15 +149,19 @@ def login_tokens(profile: str, base_url: str, identifier: str, password: str, *,
 
 
 def refresh_tokens(profile: str, base_url: str, refresh_token: str, *,
-                   timeout: float = 20, verify_ssl: bool = True) -> tuple[str, str]:
+                   timeout: float = 20, verify_ssl: bool = True,
+                   endpoint: str | None = None) -> tuple[str, str]:
     """Use refreshToken body; retain the previous refresh token if not rotated."""
     if profile not in REFRESH_ENDPOINTS or not refresh_token:
         raise LoginError("Refresh Token을 사용할 수 없습니다.")
     if not base_url.startswith(("http://", "https://")):
         raise LoginError("baseUrl은 HTTP(S) 주소여야 합니다.")
     try:
+        path = endpoint or REFRESH_ENDPOINTS[profile]
+        if not isinstance(path, str) or not path.startswith("/") or path.startswith("//") or "://" in path or "?" in path or "#" in path:
+            raise LoginError("Refresh Endpoint 형식이 올바르지 않습니다.")
         with httpx.Client(timeout=timeout, verify=verify_ssl, follow_redirects=False) as client:
-            response = client.post(base_url.rstrip("/") + REFRESH_ENDPOINTS[profile],
+            response = client.post(base_url.rstrip("/") + path,
                                    json={"refreshToken": refresh_token})
         access, rotated = _tokens_from_response(response)
         return access, rotated or refresh_token
