@@ -230,7 +230,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Postman Tester")
         self.resize(1150, 760)
         self.build_ui()
-        self.setStyleSheet(developer_stylesheet(self.theme))
+        QApplication.instance().setStyleSheet(developer_stylesheet(self.theme))
         self.body_editor.setEnabled(False)
         self.body_save.setEnabled(False)
         self.body_reset.setEnabled(False)
@@ -410,7 +410,7 @@ class MainWindow(QMainWindow):
             return
         validate_theme(theme)
         apply_theme(QApplication.instance(), theme, self.system_palette)
-        self.setStyleSheet(developer_stylesheet(theme))
+        QApplication.instance().setStyleSheet(developer_stylesheet(theme))
         self.theme = theme
         self.settings.set("theme", theme)
         self.statusBar().showMessage(f"테마가 변경되었습니다: {self.theme_selector.currentText()}")
