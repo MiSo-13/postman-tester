@@ -915,6 +915,22 @@ class MainWindow(QMainWindow):
             return
         self.start_run(retry_endpoints=candidates)
 
+    def record_response_preview(self, run_id, row, preview):
+        if run_id == self.active_preview_run and 0 <= row < 500:
+            self.response_previews[row] = preview
+            self.show_selected_response()
+
+    def show_selected_response(self):
+        current = self.history.currentItem()
+        run_id = current.text().split()[-1] if current else None
+        selection = self.result_table.selectionModel()
+        indexes = selection.selectedRows() if selection else []
+        preview = (self.response_previews.get(indexes[0].row())
+                   if run_id == self.active_preview_run and indexes else None)
+        self.response_inspector.setPlainText(
+            preview if preview else
+            "응답 원문은 저장되지 않습니다. 새 실행에서 선택한 API만 미리보기가 제공됩니다.")
+
     def show_history(self, current, previous):
         self.report_list.clear()
         self.result_table.setRowCount(0)
@@ -932,6 +948,7 @@ class MainWindow(QMainWindow):
         self.log_text.setPlainText("\n".join(
             f"[{r['status']}] {r['method']} {r['url']} ({r['http_status']}) {r['detail']}"
             for r in results))
+        self.show_selected_response()
         for report in self.storage.reports(run_id):
             self.report_list.addItem(f"{report['format'].upper()}  {report['file_path']}")
 
