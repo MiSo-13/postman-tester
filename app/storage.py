@@ -34,6 +34,12 @@ class Storage:
                 password_key TEXT NOT NULL,
                 PRIMARY KEY(project_id, profile)
             );
+            CREATE TABLE IF NOT EXISTS auth_profile_options (
+                project_id TEXT NOT NULL REFERENCES projects(id),
+                profile TEXT NOT NULL CHECK(profile IN ('USER','ADMIN')),
+                config_json TEXT NOT NULL,
+                PRIMARY KEY(project_id, profile)
+            );
             CREATE TABLE IF NOT EXISTS response_extractions (
                 project_id TEXT NOT NULL REFERENCES projects(id),
                 endpoint_key TEXT NOT NULL,
@@ -207,6 +213,24 @@ class Storage:
                   password_key=excluded.password_key
             """, (project_id, profile, validated["endpoint"],
                   validated["identifier_key"], validated["password_key"]))
+
+    def get_auth_profile_options(self, project_id: str, profile: str) -> dict:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT config_json FROM auth_profile_options WHERE project_id=? AND profile=?",
+                (project_id, profile)).fetchone()
+            return json.loads(row["config_json"]) if row else {}
+
+    def save_auth_profile_options(self, project_id: str, profile: str, options: dict):
+        if profile not in ("USER", "ADMIN"):
+            raise ValueError("지원하지 않는 인증 유형")
+        from .auth_profile import validate_profile_options
+        checked = validate_profile_options(options)
+        with self.connect() as db:
+            db.execute("""INSERT INTO auth_profile_options(project_id,profile,config_json)
+                VALUES(?,?,?) ON CONFLICT(project_id,profile) DO UPDATE SET
+                config_json=excluded.config_json""",
+                (project_id, profile, json.dumps(checked, ensure_ascii=False)))
 
     def get_response_assertions(self, project_id: str, endpoint_key: str) -> list:
         with self.connect() as db:
