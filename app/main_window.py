@@ -101,7 +101,11 @@ class RunWorker(QThread):
                             status = "CANCELLED"
                             return
                     except LoginError as exc:
-                        self.progress.emit(f"{profile} 로그인", f"ERROR: {exc}")
+                        detail = str(exc)
+                        self.progress.emit(f"{profile} 로그인", f"ERROR: {detail}")
+                        self.storage.add_result(
+                            self.run_id, f"{profile} 로그인", "POST", "",
+                            status="ERROR", detail=detail)
                         status = "ERROR"
                         return
             with httpx.Client(timeout=self.settings.values["default_timeout_seconds"],
@@ -202,7 +206,13 @@ class RunWorker(QThread):
                             self.ai_decision.emit("AI 재계획 불가: 기존 승인 순서대로 계속합니다.")
         except Exception as exc:
             status = "ERROR"
-            self.progress.emit("실행 오류", str(exc))
+            self.progress.emit("실행 오류", f"{type(exc).__name__}: {exc}")
+            try:
+                self.storage.add_result(
+                    self.run_id, "테스트 실행 오류", "SYSTEM", "",
+                    status="ERROR", detail=type(exc).__name__)
+            except Exception:
+                pass
         finally:
             self.storage.finish_run(self.run_id, status)
             self.finished_run.emit(self.run_id)
@@ -591,6 +601,13 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         values = dialog.variables
+        if "baseUrl" in values and values["baseUrl"].strip():
+            try:
+                from .auth_base_url import validate_base_url
+                validate_base_url(values["baseUrl"])
+            except ValueError as exc:
+                QMessageBox.warning(self, "Base URL 오류", str(exc))
+                return
         document = {"name": "Edited Environment", "values": [
             {"key": key, "value": value, "enabled": True}
             for key, value in values.items()]}
@@ -598,11 +615,7 @@ class MainWindow(QMainWindow):
         self.environment = dict(values)
         # The explicit project base URL must remain consistent with the editor.
         if "baseUrl" in values and values["baseUrl"].strip():
-            try:
-                self.storage.save_project_base_url(project, values["baseUrl"])
-            except ValueError as exc:
-                QMessageBox.warning(self, "Base URL 오류", str(exc))
-                return
+            self.storage.save_project_base_url(project, values["baseUrl"])
         self.statusBar().showMessage(f"Environment 변수 {len(values)}개 저장 완료")
 
     def configure_logins(self):
