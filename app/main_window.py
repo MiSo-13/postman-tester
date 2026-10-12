@@ -22,6 +22,7 @@ from .runner import execute
 from .reports import export_reports
 from .user_auth import login_tokens, refresh_tokens, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
 from .postman_auth_config import clean_environment, discover_auth
+from .environment_editor import EnvironmentEditor
 from .auth_profile_dialog import AuthProfileDialog
 from .ai_test_dialog import AITestDialog
 from .ai_adaptive import choose_next, move_next
@@ -266,6 +267,7 @@ class MainWindow(QMainWindow):
                 ("프로젝트 삭제", self.delete_project),
                 ("Collection Import", self.import_collection),
                 ("Environment Import", self.import_environment),
+                ("Environment 변수 편집", self.edit_environment),
                 ("예제 JSON 내려받기", self.download_examples)]),
             ("테스트", [
                 ("테스트 실행", self.start_run),
@@ -571,9 +573,37 @@ class MainWindow(QMainWindow):
             document = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
             _, self.environment = clean_environment(document)
             self.storage.save_import(self.current_project(), "environment", Path(filename).name, document)
+            saved_base_url = self.storage.get_project_base_url(self.current_project())
+            if saved_base_url:
+                self.environment["baseUrl"] = saved_base_url
             self.statusBar().showMessage(f"변수 {len(self.environment)}개 로드 완료")
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             QMessageBox.critical(self, "Import 오류", str(exc))
+
+    def edit_environment(self):
+        project = self.current_project()
+        if not project:
+            return
+        if hasattr(self, "worker") and self.worker.isRunning():
+            QMessageBox.warning(self, "실행 중", "테스트가 종료된 후 환경변수를 변경하세요.")
+            return
+        dialog = EnvironmentEditor(self.environment, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.variables
+        document = {"name": "Edited Environment", "values": [
+            {"key": key, "value": value, "enabled": True}
+            for key, value in values.items()]}
+        self.storage.save_import(project, "environment", "edited-environment.json", document)
+        self.environment = dict(values)
+        # The explicit project base URL must remain consistent with the editor.
+        if "baseUrl" in values and values["baseUrl"].strip():
+            try:
+                self.storage.save_project_base_url(project, values["baseUrl"])
+            except ValueError as exc:
+                QMessageBox.warning(self, "Base URL 오류", str(exc))
+                return
+        self.statusBar().showMessage(f"Environment 변수 {len(values)}개 저장 완료")
 
     def configure_logins(self):
         project = self.current_project()
