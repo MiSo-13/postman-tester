@@ -1,6 +1,7 @@
 """Initial functional PyQt6 shell with import, safe test runs and persistent history."""
 import json
 import sys
+import shutil
 import httpx
 from threading import Event
 from pathlib import Path
@@ -262,6 +263,7 @@ class MainWindow(QMainWindow):
                 ("실행 이력", lambda: self.show_workspace("history"))]),
             ("워크스페이스", [
                 ("새 프로젝트", self.add_project),
+                ("프로젝트 삭제", self.delete_project),
                 ("Collection Import", self.import_collection),
                 ("Environment Import", self.import_environment),
                 ("예제 JSON 내려받기", self.download_examples)]),
@@ -434,6 +436,47 @@ class MainWindow(QMainWindow):
             self.settings.set("last_project_id", identifier)
             self.refresh_projects()
 
+    def delete_project(self):
+        project = self.current_project()
+        if not project:
+            return
+        if hasattr(self, "worker") and self.worker.isRunning():
+            QMessageBox.warning(self, "삭제 불가", "테스트 실행이 종료된 후 프로젝트를 삭제하세요.")
+            return
+        name = self.projects.currentText()
+        confirmation, ok = QInputDialog.getText(
+            self, "프로젝트 영구 삭제",
+            f"'{name}' 프로젝트의 Collection, 설정, 테스트 결과 및 보고서를 삭제합니다.\\n"
+            f"확인하려면 프로젝트 이름 '{name}'을(를) 입력하세요.")
+        if not ok or confirmation != name:
+            return
+        try:
+            run_ids = self.storage.delete_project(project)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, "프로젝트 삭제 실패", str(exc))
+            return
+        # Only delete generated per-run folders inside our managed reports root.
+        reports_root = (self.settings.data_path() / "reports").resolve()
+        failures = []
+        for run_id in run_ids:
+            folder = (reports_root / run_id).resolve()
+            if folder.parent != reports_root:
+                continue
+            try:
+                if folder.is_dir():
+                    shutil.rmtree(folder)
+            except OSError as exc:
+                failures.append(str(exc))
+        self.session_credentials.clear()
+        self.settings.set("last_project_id", None)
+        self.refresh_projects()
+        if failures:
+            QMessageBox.warning(self, "일부 보고서 정리 실패",
+                                "프로젝트 데이터는 삭제되었지만 일부 보고서 파일이 남았습니다.\\n"
+                                + "\\n".join(failures[:3]))
+        else:
+            self.statusBar().showMessage(f"프로젝트 '{name}' 삭제 완료")
+
     def project_changed(self, *_):
         project = self.current_project()
         # No modal warning is necessary when no project exists.
@@ -470,6 +513,9 @@ class MainWindow(QMainWindow):
         if environment:
             doc = json.loads(environment["content"])
             _, self.environment = clean_environment(doc)
+        saved_base_url = self.storage.get_project_base_url(project)
+        if saved_base_url:
+            self.environment["baseUrl"] = saved_base_url
         self.refresh_history()
 
     def load_collection_document(self, document):
@@ -542,11 +588,13 @@ class MainWindow(QMainWindow):
             dialog = AuthProfileDialog(
                 profile, self.endpoints, config, options,
                 self.session_credentials.get(profile),
-                self.environment.get("baseUrl", ""),
+                self.storage.get_project_base_url(project) or self.environment.get("baseUrl", ""),
                 self.settings.values["default_timeout_seconds"],
                 self.settings.values["verify_ssl"], self)
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
+            self.storage.save_project_base_url(project, dialog.base_url)
+            self.environment["baseUrl"] = dialog.base_url
             self.storage.save_auth_config(project, profile, dialog.config)
             self.storage.save_auth_profile_options(project, profile, dialog.options)
             self.session_credentials[profile] = dialog.credentials

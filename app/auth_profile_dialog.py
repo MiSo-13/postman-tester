@@ -1,7 +1,7 @@
 """Per-project authentication setup dialog, credentials only kept in memory."""
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QComboBox,
     QLineEdit, QDialogButtonBox, QPushButton, QMessageBox, QLabel)
-from .user_auth import validate_login_config, login_tokens
+from .user_auth import validate_login_config, login_tokens, LoginError
 from .auth_profile import endpoint_login_choices, validate_profile_options
 
 
@@ -18,6 +18,9 @@ class AuthProfileDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Collection 로그인 API를 선택하고 사용할 계정을 입력하세요. 비밀번호는 저장되지 않습니다."))
         form = QFormLayout()
+        self.base_url_input = QLineEdit(base_url)
+        self.base_url_input.setPlaceholderText("http://localhost:8080 또는 https://api.example.com")
+        form.addRow("Base URL", self.base_url_input)
         self.endpoint = QComboBox()
         self.endpoint.setEditable(True)
         self.endpoint.addItem("(직접 경로 입력)", "")
@@ -56,6 +59,8 @@ class AuthProfileDialog(QDialog):
         self.credentials = None
 
     def values(self):
+        from .auth_base_url import validate_base_url
+        base_url = validate_base_url(self.base_url_input.text())
         route = self.endpoint.currentData()
         if not route or self.endpoint.currentText() != self.endpoint.itemText(self.endpoint.currentIndex()):
             route = self.endpoint.currentText()
@@ -70,10 +75,12 @@ class AuthProfileDialog(QDialog):
     def test_login(self):
         try:
             config, options, credentials = self.values()
-            login_tokens(self.profile, self.base_url, *credentials, config=config,
+            from .auth_base_url import validate_base_url
+            base_url = validate_base_url(self.base_url_input.text())
+            login_tokens(self.profile, base_url, *credentials, config=config,
                          token_paths=options, timeout=self.timeout,
                          verify_ssl=self.verify_ssl)
-        except (ValueError, TypeError) as exc:
+        except (LoginError, ValueError, TypeError) as exc:
             QMessageBox.warning(self, "로그인 테스트 실패", str(exc))
             return
         QMessageBox.information(self, "로그인 테스트 성공", "Access Token을 확인했습니다. 토큰은 저장하지 않습니다.")
@@ -81,6 +88,8 @@ class AuthProfileDialog(QDialog):
     def accept(self):
         try:
             self.config, self.options, self.credentials = self.values()
+            from .auth_base_url import validate_base_url
+            self.base_url = validate_base_url(self.base_url_input.text())
         except ValueError as exc:
             QMessageBox.warning(self, "인증 설정 오류", str(exc))
             return
