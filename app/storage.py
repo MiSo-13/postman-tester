@@ -21,6 +21,10 @@ class Storage:
             CREATE TABLE IF NOT EXISTS projects (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS project_base_urls (
+                project_id TEXT PRIMARY KEY REFERENCES projects(id),
+                base_url TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS imports (
                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
                 kind TEXT NOT NULL, filename TEXT NOT NULL,
@@ -108,6 +112,18 @@ class Storage:
     def projects(self) -> list[dict]:
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM projects ORDER BY created_at")]
+
+    def get_project_base_url(self, project_id: str):
+        with self.connect() as db:
+            row = db.execute("SELECT base_url FROM project_base_urls WHERE project_id=?", (project_id,)).fetchone()
+            return row["base_url"] if row else None
+
+    def save_project_base_url(self, project_id: str, base_url: str):
+        from .auth_base_url import validate_base_url
+        value = validate_base_url(base_url)
+        with self.connect() as db:
+            db.execute("""INSERT INTO project_base_urls(project_id, base_url) VALUES(?, ?)
+                ON CONFLICT(project_id) DO UPDATE SET base_url=excluded.base_url""", (project_id, value))
 
     def save_import(self, project_id: str, kind: str, filename: str, document: dict) -> str:
         if kind == "environment":
