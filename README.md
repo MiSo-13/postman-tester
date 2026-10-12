@@ -61,11 +61,12 @@ python -m pytest -q
 
 ## Linux / Chromebook Wayland 안내창 종료 문제
 
-프로젝트가 없는 경우 프로젝트가 필요한 기능 버튼이 비활성화됩니다. Wayland 환경에서 Qt 안내창을 닫은 뒤 앱이 종료되거나 `The Wayland connection broke` 메시지가 나타나면 아래처럼 X11(XWayland) 백엔드를 선택해 실행하세요.
+프로젝트가 없는 경우 프로젝트가 필요한 기능 버튼이 비활성화됩니다. Linux에서는 기본적으로 Qt의 XCB(XWayland) 백엔드가 선택됩니다. Wayland 환경에서 Qt 안내창을 닫은 뒤 앱이 종료되거나 `The Wayland connection broke` 메시지가 나타나면 아래처럼 X11(XWayland) 백엔드를 선택해 실행하세요.
 
 ```bash
-python main.py --x11
-# 동일한 대안: QT_QPA_PLATFORM=xcb python main.py
+python main.py
+# 명시적 X11 강제: python main.py --x11
+# Wayland 직접 사용: QT_QPA_PLATFORM=wayland python main.py
 ```
 
 Linux 환경에 Qt XCB 플러그인 및 해당 시스템 라이브러리가 설치되어 있어야 합니다. `--x11`은 앱이 Qt를 불러오기 전에 백엔드를 선택하며 Wayland 자체 오류를 해결하는 것은 아닙니다.
