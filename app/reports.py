@@ -45,12 +45,26 @@ def export_reports(storage, run_id: str, output_directory: Path) -> list[Path]:
     wb.save(xlsx_path)
     html_rows = "".join("<tr>" + "".join(f"<td>{escape(str(row[key] if row[key] is not None else ''))}</td>"
                         for key in COLUMNS) + "</tr>" for row in rows)
+    run = storage.get_run(run_id)
+    run_status = run["status"] if run else "UNKNOWN"
+    counts = {status: sum(row["status"] == status for row in rows)
+              for status in ("PASS", "FAIL", "ERROR", "BLOCKED", "SKIPPED")}
+    empty_note = (
+        "<p class='warning'>API 실행 결과가 없습니다. 로그인 실패, 실행 취소 또는 "
+        "실행 전 오류가 발생했을 수 있습니다. 앱의 실행 로그를 확인하세요.</p>"
+        if not rows else ""
+    )
     html_path.write_text(
         "<!doctype html><html lang='ko'><meta charset='utf-8'>"
-        "<title>API 테스트 결과</title><style>body{font:14px sans-serif;margin:32px}"
+        "<title>API 테스트 결과</title><style>body{font:14px sans-serif;margin:32px;background:#f6f8fc;color:#202b3a;}"
         "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:8px}"
-        "th{background:#edf1f5}tr:hover{background:#f5f8ff}</style>"
-        f"<h1>API 테스트 결과</h1><p>Run ID: {escape(run_id)}</p>"
+        "th{background:#edf1f5}tr:hover{background:#f5f8ff}"
+        ".summary{background:white;padding:16px;border:1px solid #dce4ed;border-radius:8px;margin-bottom:16px}"
+        ".warning{padding:14px;background:#fff1dc;border-left:4px solid #df8d19}</style>"
+        f"<h1>API 테스트 결과</h1><div class='summary'>Run ID: {escape(run_id)}"
+        f"<p>실행 상태: <b>{escape(run_status)}</b> · 요청 결과: {len(rows)}건 · "
+        + " · ".join(f"{key} {value}" for key, value in counts.items()) + "</p></div>"
+        + empty_note +
         "<table><thead><tr>" + "".join(f"<th>{escape(h)}</th>" for h in HEADERS)
         + "</tr></thead><tbody>" + html_rows + "</tbody></table></html>",
         encoding="utf-8")
