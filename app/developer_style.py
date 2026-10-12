@@ -15,6 +15,23 @@ def developer_stylesheet(theme):
     disabled_text = "#8190a3" if dark else "#8995a4"
     selected = "#304c70" if dark else "#dbeaff"
     return f"""
+    QDialog, QMessageBox, QInputDialog, QFileDialog {{
+        background: {panel}; color: {text};
+    }}
+    QDialog QLabel, QMessageBox QLabel, QInputDialog QLabel {{
+        color: {text}; background: transparent;
+    }}
+    QDialog QGroupBox {{
+        color: {text}; border: 1px solid {border};
+        border-radius: 5px; margin-top: 8px; padding-top: 6px;
+    }}
+    QDialog QCheckBox, QDialog QRadioButton {{
+        color: {text}; background: transparent;
+    }}
+    QDialog QDialogButtonBox QPushButton {{
+        color: {text}; background: {surface}; border: 1px solid {border};
+        min-width: 70px; padding: 6px 10px;
+    }}
     QWidget#ProjectHeader {{ background: {panel}; border-bottom: 1px solid {border}; }}
     QLabel#Brand {{ font-size: 14px; font-weight: 800; letter-spacing: 1px; color: #4e95eb; }}
     QFrame#NavigationSidebar {{ background: {panel}; border-right: 1px solid {border}; }}
