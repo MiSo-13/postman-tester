@@ -33,7 +33,8 @@ def execute(endpoint, variables: dict, timeout: float = 20,
             file_root: Path | None = None,
             assertions: list | None = None,
             extraction_rules: list | None = None,
-            captured_variables: dict | None = None) -> dict:
+            captured_variables: dict | None = None,
+            client: httpx.Client | None = None) -> dict:
     """Only send supported request shapes; all checks precede the HTTP call."""
     from .assertions import validate_rules
     try:
@@ -113,11 +114,15 @@ def execute(endpoint, variables: dict, timeout: float = 20,
                 for key, path, media_type in uploads:
                     handle = stack.enter_context(open(path, "rb"))
                     multipart.append((key, (path.name, handle, media_type)))
-            with httpx.Client(timeout=timeout, verify=verify_ssl, follow_redirects=False) as client:
+            with ExitStack() as transport_stack:
+                active_client = client
+                if active_client is None:
+                    active_client = transport_stack.enter_context(httpx.Client(
+                        timeout=timeout, verify=verify_ssl, follow_redirects=False))
                 if multipart is not None:
-                    response = client.request(method, url, headers=headers, files=multipart)
+                    response = active_client.request(method, url, headers=headers, files=multipart)
                 else:
-                    response = client.request(method, url, headers=headers, content=payload)
+                    response = active_client.request(method, url, headers=headers, content=payload)
         elapsed = round((time.monotonic() - started) * 1000, 2)
         from .assertions import evaluate_response
         passed, message = evaluate_response(response, assertions)
