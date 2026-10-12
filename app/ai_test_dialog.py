@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QDialogButtonBox)
 
 from .ai_planner_client import generate_plan
+from .ai_usage import add_usage, empty_usage, usage_summary
 
 
 class PlanningThread(QThread):
@@ -32,6 +33,8 @@ class AITestDialog(QDialog):
         self.keys = list(keys)
         self.endpoints = list(endpoints)
         self.plan = None
+        self.usage_total = empty_usage()
+        self.usage_calls = 0
         self.setWindowTitle("AI 테스트 계획 · 검토")
         self.resize(850, 600)
         layout = QVBoxLayout(self)
@@ -53,6 +56,12 @@ class AITestDialog(QDialog):
         self.generate = QPushButton("AI 계획 생성")
         self.generate.clicked.connect(self.request_plan)
         layout.addWidget(self.generate)
+        self.last_usage = QLabel("최근 요청: 아직 사용량 없음")
+        self.total_usage = QLabel("현재 창 누적: 0회 · 입력 0 · 출력 0 · 합계 0")
+        self.usage_note = QLabel("OpenAI 응답의 토큰 사용량입니다. 비용 및 계정 전체 사용량은 별도입니다.")
+        layout.addWidget(self.last_usage)
+        layout.addWidget(self.total_usage)
+        layout.addWidget(self.usage_note)
         layout.addWidget(QLabel("AI가 제안한 실행 순서 (드래그하여 수정 가능)"))
         self.steps = QListWidget()
         self.steps.setDragDropMode(QListWidget.DragDropMode.InternalMove)
@@ -78,6 +87,13 @@ class AITestDialog(QDialog):
         self.worker.start()
 
     def show_plan(self, plan):
+        usage = plan.get("_usage")
+        self.last_usage.setText("최근 요청: " + usage_summary(usage))
+        if usage is not None:
+            self.usage_total = add_usage(self.usage_total, usage)
+            self.usage_calls += 1
+        self.total_usage.setText(
+            f"현재 창 누적: {self.usage_calls}회 · " + usage_summary(self.usage_total))
         self.plan = plan
         from PyQt6.QtCore import Qt
         lookup = dict(zip(self.keys, self.endpoints))
