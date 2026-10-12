@@ -39,6 +39,8 @@ from .assertion_editor import AssertionRuleEditor
 from .response_field_dialog import ResponseFieldRuleDialog
 from .assertions import validate_rules
 from .ui_components import ProjectHeader, NavigationSidebar, EndpointExplorer
+from .dashboard_widgets import DashboardMetrics
+from .developer_style import developer_stylesheet
 
 
 class RunWorker(QThread):
@@ -226,6 +228,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Postman Tester")
         self.resize(1150, 760)
         self.build_ui()
+        self.setStyleSheet(developer_stylesheet(self.theme))
         self.body_editor.setEnabled(False)
         self.body_save.setEnabled(False)
         self.body_reset.setEnabled(False)
@@ -361,6 +364,7 @@ class MainWindow(QMainWindow):
             return
         validate_theme(theme)
         apply_theme(QApplication.instance(), theme, self.system_palette)
+        self.setStyleSheet(developer_stylesheet(theme))
         self.theme = theme
         self.settings.set("theme", theme)
         self.statusBar().showMessage(f"테마가 변경되었습니다: {self.theme_selector.currentText()}")
@@ -883,13 +887,8 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("실행 결과 대시보드 — 최근 30회")
         dialog.resize(1020, 680)
         layout = QVBoxLayout(dialog)
-        rate = dashboard["failure_rate"]
-        avg = dashboard["avg_ms"]
-        layout.addWidget(QLabel(
-            f"실행 {dashboard['runs']}회  |  요청 {dashboard['executed']}건  |  "
-            f"실패 {dashboard['failures']}건  |  SKIPPED {dashboard['skipped']}건  |  "
-            f"실패율 {rate if rate is not None else '—'}%  |  "
-            f"평균 {avg if avg is not None else '—'}ms"))
+        layout.addWidget(QLabel("운영 대시보드  /  최근 완료된 30회 실행"))
+        layout.addWidget(DashboardMetrics(dashboard, dialog))
         layout.addWidget(TrendChart(
             [item["failure_rate"] for item in dashboard["timeline"]],
             "실행 회차별 실패율 (%)", "%", dialog))
