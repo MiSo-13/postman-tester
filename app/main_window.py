@@ -24,6 +24,7 @@ from .retry import retry_candidates
 from .run_comparison import compare_runs
 from .comparison_reports import export_comparison, summarize
 from .history_dashboard import build_dashboard
+from .trend_chart import TrendChart
 
 
 class RunWorker(QThread):
@@ -674,7 +675,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "실행 이력 없음", "완료된 실행 이력이 없습니다.")
             return
         dashboard = build_dashboard(
-            completed, {run["id"]: self.storage.results(run["id"]) for run in completed})
+            completed, self.storage.results_for_runs(project, [run["id"] for run in completed]))
         dialog = QDialog(self)
         dialog.setWindowTitle("실행 결과 대시보드 — 최근 30회")
         dialog.resize(1020, 680)
@@ -686,6 +687,12 @@ class MainWindow(QMainWindow):
             f"실패 {dashboard['failures']}건  |  SKIPPED {dashboard['skipped']}건  |  "
             f"실패율 {rate if rate is not None else '—'}%  |  "
             f"평균 {avg if avg is not None else '—'}ms"))
+        layout.addWidget(TrendChart(
+            [item["failure_rate"] for item in dashboard["timeline"]],
+            "실행 회차별 실패율 (%)", "%", dialog))
+        layout.addWidget(TrendChart(
+            [item["avg_ms"] for item in dashboard["timeline"]],
+            "실행 회차별 평균 응답 시간 (ms)", "ms", dialog))
         tabs = QTabWidget()
         trend = QTableWidget(len(dashboard["timeline"]), 7)
         trend.setHorizontalHeaderLabels(
