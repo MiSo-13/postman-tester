@@ -31,6 +31,8 @@ from .retry_policy import RetryPolicy, execute_with_retries
 from .themes import THEMES, validate_theme, apply_theme
 from .performance_reports import export_performance_report
 from .assertion_editor import AssertionRuleEditor
+from .response_field_dialog import ResponseFieldRuleDialog
+from .assertions import validate_rules
 
 
 class RunWorker(QThread):
@@ -272,6 +274,8 @@ class MainWindow(QMainWindow):
         self.response_inspector.setReadOnly(True)
         self.response_inspector.setPlainText("실행 결과를 선택하면 응답 미리보기를 확인할 수 있습니다.")
         self.result_table.itemSelectionChanged.connect(self.show_selected_response)
+        self.create_assertion_button = QPushButton("응답 필드에서 검증 규칙 만들기")
+        self.create_assertion_button.clicked.connect(self.create_assertion_from_response)
         self.retry_button = QPushButton("선택한 실패 읽기 API 재실행")
         self.retry_button.clicked.connect(self.retry_failed)
         results_panel = QWidget()
@@ -279,6 +283,7 @@ class MainWindow(QMainWindow):
         results_layout.addWidget(self.result_table)
         results_layout.addWidget(QLabel("응답 미리보기 (메모리 전용 · 문자열 마스킹)"))
         results_layout.addWidget(self.response_inspector)
+        results_layout.addWidget(self.create_assertion_button)
         results_layout.addWidget(self.retry_button)
         self.report_list = QListWidget()
         for name, widget in [("Request 미리보기", self.request_text),
@@ -914,6 +919,51 @@ class MainWindow(QMainWindow):
                 "실패한 GET/HEAD/OPTIONS 요청만 재실행할 수 있습니다.")
             return
         self.start_run(retry_endpoints=candidates)
+
+    def create_assertion_from_response(self):
+        selected = self.history.currentItem()
+        selection = self.result_table.selectionModel()
+        rows = selection.selectedRows() if selection else []
+        if not selected or len(rows) != 1:
+            QMessageBox.warning(self, "결과 선택", "실행 회차와 API 결과 한 행을 선택하세요.")
+            return
+        run_id = selected.text().split()[-1]
+        row = rows[0].row()
+        preview = self.response_previews.get(row) if run_id == self.active_preview_run else None
+        if not preview:
+            QMessageBox.warning(self, "미리보기 없음", "현재 실행의 응답 미리보기가 필요합니다.")
+            return
+        results = self.storage.results(run_id)
+        if row >= len(results):
+            return
+        item = results[row]
+        matches = [i for i, endpoint in enumerate(self.endpoints)
+                   if endpoint.name == item["endpoint_name"]
+                   and endpoint.method == item["method"]
+                   and endpoint.url == item["url"]]
+        if len(matches) != 1:
+            QMessageBox.warning(self, "API 식별 불가",
+                "Collection에서 API를 유일하게 식별할 수 없습니다. 원본 API를 선택해 규칙을 편집하세요.")
+            return
+        dialog = ResponseFieldRuleDialog(preview, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        key = self.endpoint_keys[matches[0]]
+        existing = self.storage.get_response_assertions(self.current_project(), key)
+        try:
+            suggested = validate_rules([*existing, dialog.rule])
+        except ValueError as exc:
+            QMessageBox.warning(self, "규칙 제한", str(exc))
+            return
+        editor = AssertionRuleEditor(suggested, self)
+        if editor.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self.storage.save_response_assertions(self.current_project(), key, editor.rules)
+        except ValueError as exc:
+            QMessageBox.warning(self, "저장 실패", str(exc))
+            return
+        self.statusBar().showMessage("응답에서 생성한 검증 규칙을 저장했습니다.")
 
     def record_response_preview(self, run_id, row, preview):
         if run_id == self.active_preview_run and 0 <= row < 500:
