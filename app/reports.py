@@ -4,10 +4,21 @@ from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
 
 COLUMNS = ["endpoint_name", "method", "url", "status", "http_status", "elapsed_ms", "detail"]
 HEADERS = ["API 이름", "Method", "URL", "결과", "HTTP 상태", "응답(ms)", "상세"]
+
+
+def safe_spreadsheet_value(value):
+    """Treat imported API text and response details as data, never spreadsheet formulas."""
+    if not isinstance(value, str):
+        return value
+    value = ILLEGAL_CHARACTERS_RE.sub("", value)
+    if value.startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
 
 
 def export_reports(storage, run_id: str, output_directory: Path) -> list[Path]:
@@ -22,7 +33,7 @@ def export_reports(storage, run_id: str, output_directory: Path) -> list[Path]:
     for cell in ws[1]:
         cell.font = Font(bold=True)
     for row in rows:
-        ws.append([row[key] for key in COLUMNS])
+        ws.append([safe_spreadsheet_value(row[key]) for key in COLUMNS])
         color = {"PASS": "D9EAD3", "FAIL": "F4CCCC", "ERROR": "FCE5CD",
                  "BLOCKED": "FFF2CC", "SKIPPED": "E7E6E6"}.get(row["status"])
         if color:
