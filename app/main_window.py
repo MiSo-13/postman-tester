@@ -37,6 +37,7 @@ class RunWorker(QThread):
     progress = pyqtSignal(str, str)
     finished_run = pyqtSignal(str)
     step_result = pyqtSignal(int, int, str, str)
+    response_preview = pyqtSignal(str, int, str)
 
     def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None, extraction_rules=None, stop_on_failure=False, retry_policy=None):
         super().__init__()
@@ -103,7 +104,8 @@ class RunWorker(QThread):
                             assertions=self.response_rules.get(key, []),
                             extraction_rules=self.extraction_rules.get(key, []),
                             captured_variables=self.variables,
-                            client=client)
+                            client=client,
+                            preview_callback=lambda text, row=step_index - 1: self.response_preview.emit(self.run_id, row, text))
                     attempts = []
                     result = execute_with_retries(
                         request_once, endpoint, self.retry_policy,
@@ -137,7 +139,8 @@ class RunWorker(QThread):
                                 assertions=self.response_rules.get(key, []),
                                 extraction_rules=self.extraction_rules.get(key, []),
                                 captured_variables=self.variables,
-                                client=client)
+                                client=client,
+                                preview_callback=lambda text, row=step_index - 1: self.response_preview.emit(self.run_id, row, text))
                         except LoginError as exc:
                             self.progress.emit(f"{selected_profile} 토큰 갱신", f"ERROR: {exc}")
                             result["status"] = "ERROR"
@@ -176,6 +179,8 @@ class MainWindow(QMainWindow):
         self.environment = {}
         self.endpoint_keys = []
         self.selected_endpoint_index = None
+        self.response_previews = {}
+        self.active_preview_run = None
         self.setWindowTitle("Postman Tester")
         self.resize(1150, 760)
         self.build_ui()
