@@ -23,6 +23,8 @@ from .user_auth import login_tokens, refresh_tokens, needs_user_token, needs_adm
 from .postman_auth_config import clean_environment, discover_auth
 from .auth_profile_dialog import AuthProfileDialog
 from .ai_test_dialog import AITestDialog
+from .ai_adaptive import choose_next, move_next
+from .ai_usage import usage_summary
 from .request_overrides import endpoint_key, validate_raw_json
 from .scenarios import resolve_steps, validate_steps, should_stop
 from .retry import retry_candidates
@@ -43,8 +45,9 @@ class RunWorker(QThread):
     finished_run = pyqtSignal(str)
     step_result = pyqtSignal(int, int, str, str)
     response_preview = pyqtSignal(str, int, str)
+    ai_decision = pyqtSignal(str)
 
-    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None, extraction_rules=None, stop_on_failure=False, retry_policy=None, refresh_paths=None, token_paths=None):
+    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None, extraction_rules=None, stop_on_failure=False, retry_policy=None, refresh_paths=None, token_paths=None, adaptive_ai=None):
         super().__init__()
         self.storage = storage
         self.run_id = run_id
@@ -62,6 +65,7 @@ class RunWorker(QThread):
         self.retry_policy = retry_policy or RetryPolicy()
         self.refresh_paths = refresh_paths or {}
         self.token_paths = token_paths or {}
+        self.adaptive_ai = adaptive_ai
 
     def cancel(self):
         self.cancel_event.set()
@@ -91,7 +95,13 @@ class RunWorker(QThread):
             with httpx.Client(timeout=self.settings.values["default_timeout_seconds"],
                              verify=self.settings.values["verify_ssl"],
                              follow_redirects=False) as client:
-                for step_index, (key, endpoint) in enumerate(self.endpoints, start=1):
+                pending = list(self.endpoints)
+                executed = []
+                ai_calls = 0
+                step_index = 0
+                while pending:
+                    step_index += 1
+                    key, endpoint = pending.pop(0)
                     if self.cancel_event.is_set():
                         status = "CANCELLED"
                         break
@@ -100,20 +110,22 @@ class RunWorker(QThread):
                     user_token = sessions["USER"][0] if sessions["USER"] else None
                     admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
                     def request_once():
+                        # Single request builder reused for normal run and post-refresh replay.
                         return execute(
                             endpoint, self.variables,
                             timeout=self.settings.values["default_timeout_seconds"],
                             verify_ssl=self.settings.values["verify_ssl"],
                             allow_writes=self.settings.values["dangerous_methods_enabled"],
                             raw_body_override=self.body_overrides.get(key),
-                            user_access_token=user_token,
-                            admin_access_token=admin_token,
+                            user_access_token=sessions["USER"][0] if sessions["USER"] else None,
+                            admin_access_token=sessions["ADMIN"][0] if sessions["ADMIN"] else None,
                             file_root=self.settings.root / self.settings.values["file_root"],
                             assertions=self.response_rules.get(key, []),
                             extraction_rules=self.extraction_rules.get(key, []),
                             captured_variables=self.variables,
                             client=client,
-                            preview_callback=lambda text, row=step_index - 1: self.response_preview.emit(self.run_id, row, text))
+                            preview_callback=lambda text, row=step_index - 1:
+                                self.response_preview.emit(self.run_id, row, text))
                     attempts = []
                     result = execute_with_retries(
                         request_once, endpoint, self.retry_policy,
@@ -137,20 +149,7 @@ class RunWorker(QThread):
                             self.progress.emit(f"{selected_profile} 토큰 갱신", "PASS")
                             user_token = sessions["USER"][0] if sessions["USER"] else None
                             admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
-                            result = execute(
-                                endpoint, self.variables,
-                                timeout=self.settings.values["default_timeout_seconds"],
-                                verify_ssl=self.settings.values["verify_ssl"],
-                                allow_writes=self.settings.values["dangerous_methods_enabled"],
-                                raw_body_override=self.body_overrides.get(key),
-                                user_access_token=user_token,
-                                admin_access_token=admin_token,
-                                file_root=self.settings.root / self.settings.values["file_root"],
-                                assertions=self.response_rules.get(key, []),
-                                extraction_rules=self.extraction_rules.get(key, []),
-                                captured_variables=self.variables,
-                                client=client,
-                                preview_callback=lambda text, row=step_index - 1: self.response_preview.emit(self.run_id, row, text))
+                            result = request_once()
                         except LoginError as exc:
                             self.progress.emit(f"{selected_profile} 토큰 갱신", f"ERROR: {exc}")
                             result["status"] = "ERROR"
@@ -163,6 +162,27 @@ class RunWorker(QThread):
                     if self.cancel_event.is_set():
                         status = "CANCELLED"
                         break
+                    executed.append({"status": result["status"],
+                                     "http_status": result.get("http_status"),
+                                     "method": endpoint.method})
+                    if (self.adaptive_ai and pending and ai_calls < self.adaptive_ai["max_calls"]
+                            and result["status"] in ("FAIL", "ERROR", "BLOCKED")
+                            and not self.cancel_event.is_set()):
+                        ai_calls += 1
+                        try:
+                            decision, usage = choose_next(
+                                self.adaptive_ai["key"], self.adaptive_ai["model"],
+                                executed, pending)
+                            self.ai_decision.emit(
+                                f"AI 재계획 {ai_calls}/{self.adaptive_ai['max_calls']}: "
+                                f"{decision['action']} · {decision['reason']} · "
+                                + usage_summary(usage))
+                            if decision["action"] == "stop":
+                                status = "STOPPED"
+                                break
+                            pending = move_next(pending, decision["next_id"])
+                        except ValueError:
+                            self.ai_decision.emit("AI 재계획 불가: 기존 승인 순서대로 계속합니다.")
                     if should_stop(result["status"], self.stop_on_failure):
                         status = "STOPPED"
                         break
@@ -659,9 +679,11 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             QMessageBox.warning(self, "계획 오류", str(exc))
             return
-        self.start_run(planned_endpoints=ordered)
+        self.start_run(planned_endpoints=ordered, adaptive_ai={
+            "key": dialog.key.text(), "model": dialog.model.text(),
+            "max_calls": dialog.adaptive_calls.value()})
 
-    def start_run(self, checked=False, *, retry_endpoints=None, planned_endpoints=None):
+    def start_run(self, checked=False, *, retry_endpoints=None, planned_endpoints=None, adaptive_ai=None):
         if hasattr(self, "worker") and self.worker.isRunning():
             QMessageBox.warning(self, "실행 중", "이미 실행 중인 작업이 있습니다.")
             return
@@ -784,12 +806,14 @@ class MainWindow(QMainWindow):
             self.storage, run_id, endpoints, self.environment.copy(), self.settings,
             body_overrides, user_credentials, admin_credentials, auth_configs, response_rules, extraction_rules,
             stop_on_failure=stop_on_failure, retry_policy=retry_policy,
-            refresh_paths=self.refresh_discovered, token_paths=token_paths)
+            refresh_paths=self.refresh_discovered, token_paths=token_paths,
+            adaptive_ai=adaptive_ai)
         self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
         self.worker.step_result.connect(lambda i, total, name, state: (
             self.run_progress.setValue(round(i / total * 100)),
             self.log_text.append(f"단계 {i}/{total}: [{state}] {name}")))
         self.worker.response_preview.connect(self.record_response_preview)
+        self.worker.ai_decision.connect(lambda message: self.log_text.append(message))
         self.worker.finished_run.connect(self.run_finished)
         self.run_progress.setValue(0)
         self.cancel_button.setEnabled(True)
