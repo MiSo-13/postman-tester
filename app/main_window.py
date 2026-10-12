@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTreeWidget, QTreeWidgetItem, QTextEdit, QLabel,
     QComboBox, QFileDialog, QMessageBox, QInputDialog, QSplitter,
-    QTabWidget, QListWidget, QListWidgetItem, QCheckBox, QLineEdit, QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem, QAbstractItemView, QProgressBar
+    QTabWidget, QStackedWidget, QListWidget, QListWidgetItem, QCheckBox, QLineEdit, QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem, QAbstractItemView, QProgressBar
 )
 
 from .settings import Settings
@@ -41,6 +41,7 @@ from .assertions import validate_rules
 from .ui_components import ProjectHeader, NavigationSidebar, EndpointExplorer
 from .dashboard_widgets import DashboardMetrics
 from .developer_style import developer_stylesheet
+from .workspace_pages import ProjectHome, WorkspaceOverview
 
 
 class RunWorker(QThread):
@@ -255,6 +256,10 @@ class MainWindow(QMainWindow):
         workspace.setSpacing(0)
         self.project_buttons = []
         navigation = [
+            ("화면", [
+                ("홈", lambda: self.show_workspace("home")),
+                ("API 탐색", lambda: self.show_workspace("api")),
+                ("실행 이력", lambda: self.show_workspace("history"))]),
             ("워크스페이스", [
                 ("새 프로젝트", self.add_project),
                 ("Collection Import", self.import_collection),
@@ -274,7 +279,7 @@ class MainWindow(QMainWindow):
         ]
         self.sidebar = NavigationSidebar(navigation)
         for label, button in self.sidebar.buttons.items():
-            if label not in ("새 프로젝트", "예제 JSON 내려받기"):
+            if label not in ("새 프로젝트", "예제 JSON 내려받기", "홈", "API 탐색", "실행 이력"):
                 self.project_buttons.append(button)
         workspace.addWidget(self.sidebar)
         main_panel = QWidget()
@@ -282,6 +287,21 @@ class MainWindow(QMainWindow):
         main_column.setContentsMargins(12, 8, 12, 8)
         workspace.addWidget(main_panel, 1)
         layout.addLayout(workspace, 1)
+        self.workspace_stack = QStackedWidget()
+        main_column.addWidget(self.workspace_stack, 1)
+        self.home_page = ProjectHome(self.add_project, self.import_collection, self.import_environment)
+        self.workspace_stack.addWidget(self.home_page)
+        self.api_page = QWidget()
+        api_column = QVBoxLayout(self.api_page)
+        api_column.setContentsMargins(0, 0, 0, 0)
+        self.workspace_stack.addWidget(self.api_page)
+        self.history_page = WorkspaceOverview("실행 이력", "이전 실행 기록과 리포트, 운영 대시보드를 확인하세요.", [
+            ("이전 실행 보기", lambda: self.open_api_tab("이전 실행")),
+            ("결과 상세 보기", lambda: self.open_api_tab("실행 결과 상세")),
+            ("운영 대시보드", self.show_dashboard),
+            ("실행 회차 비교", self.compare_run_history)])
+        self.workspace_stack.addWidget(self.history_page)
+        self.workspace_tabs = None
         run_controls = QHBoxLayout()
         self.run_progress = QProgressBar()
         self.run_progress.setRange(0, 100)
@@ -291,7 +311,7 @@ class MainWindow(QMainWindow):
         self.cancel_button.clicked.connect(self.cancel_run)
         run_controls.addWidget(self.run_progress)
         run_controls.addWidget(self.cancel_button)
-        main_column.addLayout(run_controls)
+        api_column.addLayout(run_controls)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.explorer = EndpointExplorer()
@@ -353,10 +373,34 @@ class MainWindow(QMainWindow):
                              ("실행 결과 상세", results_panel),
                              ("보관된 보고서", self.report_list)]:
             tabs.addTab(widget, name)
+        self.workspace_tabs = tabs
         splitter.addWidget(tabs)
         splitter.setSizes([420, 720])
-        main_column.addWidget(splitter)
+        api_column.addWidget(splitter)
+        self.show_workspace("home")
         self.statusBar().showMessage("Collection을 가져와 시작하세요.")
+
+    def show_workspace(self, page):
+        lookup = {"home": 0, "api": 1, "history": 2}
+        if page not in lookup:
+            raise ValueError("지원하지 않는 작업 화면입니다.")
+        if page != "home" and not self.current_project():
+            page = "home"
+        self.workspace_stack.setCurrentIndex(lookup[page])
+        labels = {"home": "홈", "api": "API 탐색", "history": "실행 이력"}
+        for label, button in self.sidebar.buttons.items():
+            if label in labels.values():
+                button.setProperty("active", label == labels[page])
+                button.style().unpolish(button)
+                button.style().polish(button)
+
+    def open_api_tab(self, tab_label):
+        for index in range(self.workspace_tabs.count()):
+            if self.workspace_tabs.tabText(index) == tab_label:
+                self.workspace_tabs.setCurrentIndex(index)
+                self.show_workspace("api")
+                return
+        raise ValueError("없는 작업 탭입니다.")
 
     def change_theme(self, _=None):
         theme = self.theme_selector.currentData()
@@ -396,6 +440,10 @@ class MainWindow(QMainWindow):
         # Keep these actions disabled until a project is selected.
         for button in self.project_buttons:
             button.setEnabled(bool(project))
+        self.home_page.set_project_available(bool(project))
+        self.sidebar.buttons["API 탐색"].setEnabled(bool(project))
+        self.sidebar.buttons["실행 이력"].setEnabled(bool(project))
+        self.show_workspace("api" if project else "home")
         self.tree.clear()
         self.endpoints = []
         self.endpoint_keys = []
