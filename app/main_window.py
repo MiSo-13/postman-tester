@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTreeWidget, QTreeWidgetItem, QTextEdit, QLabel,
     QComboBox, QFileDialog, QMessageBox, QInputDialog, QSplitter,
-    QTabWidget, QListWidget, QListWidgetItem, QCheckBox, QLineEdit, QDialog, QDialogButtonBox
+    QTabWidget, QListWidget, QListWidgetItem, QCheckBox, QLineEdit, QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem, QAbstractItemView
 )
 
 from .settings import Settings
@@ -20,6 +20,8 @@ from .reports import export_reports
 from .user_auth import login_tokens, refresh_tokens, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
 from .request_overrides import endpoint_key, validate_raw_json
 from .scenarios import resolve_steps, validate_steps, should_stop
+from .retry import retry_candidates
+from .run_comparison import compare_runs
 
 
 class RunWorker(QThread):
@@ -157,6 +159,7 @@ class MainWindow(QMainWindow):
             ("응답 검증 규칙", self.configure_assertions),
             ("응답 변수 추출", self.configure_extractions),
             ("시나리오 관리", self.manage_scenarios),
+            ("실행 회차 비교", self.compare_run_history),
             ("테스트 실행", self.start_run),
         ]:
             button = QPushButton(label)
@@ -195,12 +198,24 @@ class MainWindow(QMainWindow):
         self.log_text.setReadOnly(True)
         self.history = QListWidget()
         self.history.currentItemChanged.connect(self.show_history)
+        self.result_table = QTableWidget(0, 6)
+        self.result_table.setHorizontalHeaderLabels(
+            ["API", "Method", "상태", "HTTP", "시간(ms)", "상세"])
+        self.result_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.result_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.retry_button = QPushButton("선택한 실패 읽기 API 재실행")
+        self.retry_button.clicked.connect(self.retry_failed)
+        results_panel = QWidget()
+        results_layout = QVBoxLayout(results_panel)
+        results_layout.addWidget(self.result_table)
+        results_layout.addWidget(self.retry_button)
         self.report_list = QListWidget()
         for name, widget in [("Request 미리보기", self.request_text),
                              ("Response 예시", self.response_text),
                              ("JSON Body 편집", body_panel),
                              ("실행 로그", self.log_text),
                              ("이전 실행", self.history),
+                             ("실행 결과 상세", results_panel),
                              ("보관된 보고서", self.report_list)]:
             tabs.addTab(widget, name)
         splitter.addWidget(tabs)
@@ -523,7 +538,7 @@ class MainWindow(QMainWindow):
         self.body_editor.blockSignals(False)
         self.body_message.setText("원본으로 복원되었습니다.")
 
-    def start_run(self):
+    def start_run(self, checked=False, *, retry_endpoints=None):
         if self.body_message.text() == "저장되지 않은 수정사항":
             QMessageBox.warning(
                 self, "저장되지 않은 JSON",
@@ -532,32 +547,36 @@ class MainWindow(QMainWindow):
         if not self.current_project() or not self.endpoints:
             QMessageBox.warning(self, "실행 불가", "프로젝트와 Collection을 선택하세요.")
             return
-        chosen = self.tree.selectedItems()
-        index = chosen[0].data(0, Qt.ItemDataRole.UserRole) if chosen else None
-        scenarios = self.storage.scenarios(self.current_project())
-        scenario_name = None
-        if scenarios and index is None:
-            labels = ["전체 Collection 순서"] + [
-                f"{s['name']} ({s['id'][:8]})" for s in scenarios]
-            choice, ok = QInputDialog.getItem(
-                self, "실행 시나리오", "실행할 시나리오 선택", labels, 0, False)
-            if not ok:
-                return
-            selection = labels.index(choice)
-            if selection:
-                entry = scenarios[selection - 1]
-                scenario_name = entry["name"]
-                try:
-                    endpoints = resolve_steps(
-                        json.loads(entry["steps_json"]), self.endpoint_keys, self.endpoints)
-                except ValueError as exc:
-                    QMessageBox.warning(self, "시나리오 오류", str(exc))
-                    return
-            else:
-                endpoints = list(zip(self.endpoint_keys, self.endpoints))
+        if retry_endpoints is not None:
+            endpoints = retry_endpoints
+            scenario_name = '실패 읽기 API 재실행'
         else:
-            indices = [index] if index is not None else list(range(len(self.endpoints)))
-            endpoints = [(self.endpoint_keys[i], self.endpoints[i]) for i in indices]
+            chosen = self.tree.selectedItems()
+            index = chosen[0].data(0, Qt.ItemDataRole.UserRole) if chosen else None
+            scenarios = self.storage.scenarios(self.current_project())
+            scenario_name = None
+            if scenarios and index is None:
+                labels = ["전체 Collection 순서"] + [
+                    f"{s['name']} ({s['id'][:8]})" for s in scenarios]
+                choice, ok = QInputDialog.getItem(
+                    self, "실행 시나리오", "실행할 시나리오 선택", labels, 0, False)
+                if not ok:
+                    return
+                selection = labels.index(choice)
+                if selection:
+                    entry = scenarios[selection - 1]
+                    scenario_name = entry["name"]
+                    try:
+                        endpoints = resolve_steps(
+                            json.loads(entry["steps_json"]), self.endpoint_keys, self.endpoints)
+                    except ValueError as exc:
+                        QMessageBox.warning(self, "시나리오 오류", str(exc))
+                        return
+                else:
+                    endpoints = list(zip(self.endpoint_keys, self.endpoints))
+            else:
+                indices = [index] if index is not None else list(range(len(self.endpoints)))
+                endpoints = [(self.endpoint_keys[i], self.endpoints[i]) for i in indices]
         message = f"API {len(endpoints)}개를 실행합니다.\n쓰기 API는 기본적으로 SKIPPED 처리됩니다.\n계속하시겠습니까?"
         if QMessageBox.question(self, "테스트 시작", message) != QMessageBox.StandardButton.Yes:
             return
@@ -641,12 +660,91 @@ class MainWindow(QMainWindow):
             for run in self.storage.runs(self.current_project()):
                 self.history.addItem(f"{run['started_at']}  [{run['status']}]  {run['id']}")
 
+    def compare_run_history(self):
+        if not self.current_project():
+            QMessageBox.warning(self, "프로젝트 필요", "프로젝트를 선택하세요.")
+            return
+        runs = [r for r in self.storage.runs(self.current_project())
+                if r["status"] != "PENDING"]
+        if len(runs) < 2:
+            QMessageBox.warning(self, "회차 부족", "완료된 실행 회차가 최소 2개 필요합니다.")
+            return
+        labels = [f"{r['started_at']} [{r['status']}] {r['name']} ({r['id'][:8]})"
+                  for r in runs]
+        older, ok = QInputDialog.getItem(
+            self, "회차 비교", "기준 회차 (이전)", labels, 1, False)
+        if not ok:
+            return
+        newer, ok = QInputDialog.getItem(
+            self, "회차 비교", "비교 회차 (이후)", labels, 0, False)
+        if not ok:
+            return
+        i, j = labels.index(older), labels.index(newer)
+        if i == j:
+            QMessageBox.warning(self, "회차 선택 오류", "서로 다른 회차를 선택하세요.")
+            return
+        changes = compare_runs(
+            self.storage.results(runs[i]["id"]),
+            self.storage.results(runs[j]["id"]))
+        dialog = QDialog(self)
+        dialog.setWindowTitle("실행 회차 비교")
+        dialog.resize(900, 550)
+        layout = QVBoxLayout(dialog)
+        summary = {}
+        for item in changes:
+            summary[item["change"]] = summary.get(item["change"], 0) + 1
+        layout.addWidget(QLabel(" | ".join(
+            f"{k}: {v}" for k, v in sorted(summary.items())) or "비교 대상 없음"))
+        table = QTableWidget(len(changes), 7)
+        table.setHorizontalHeaderLabels(
+            ["API", "Method", "순번", "기준", "비교", "변화", "시간차(ms)"])
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        for row, item in enumerate(changes):
+            values = [item["name"], item["method"], item["occurrence"],
+                      item["before"], item["after"], item["change"], item["delta_ms"]]
+            for col, value in enumerate(values):
+                table.setItem(row, col, QTableWidgetItem(
+                    "—" if value is None else str(value)))
+        layout.addWidget(table)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def retry_failed(self):
+        if hasattr(self, "worker") and self.worker.isRunning():
+            QMessageBox.warning(self, "실행 중", "현재 실행이 끝난 후 재실행하세요.")
+            return
+        current = self.history.currentItem()
+        if current is None:
+            QMessageBox.warning(self, "회차 선택 필요", "이전 실행 회차를 먼저 선택하세요.")
+            return
+        run_id = current.text().split()[-1]
+        rows = self.storage.results(run_id)
+        selected_rows = sorted(set(index.row() for index in self.result_table.selectedIndexes()))
+        if selected_rows:
+            rows = [rows[i] for i in selected_rows]
+        candidates = retry_candidates(rows, self.endpoints, self.endpoint_keys)
+        if not candidates:
+            QMessageBox.warning(self, "재실행 불가",
+                "실패한 GET/HEAD/OPTIONS 요청만 재실행할 수 있습니다.")
+            return
+        self.start_run(retry_endpoints=candidates)
+
     def show_history(self, current, previous):
         self.report_list.clear()
+        self.result_table.setRowCount(0)
         if not current:
             return
         run_id = current.text().split()[-1]
         results = self.storage.results(run_id)
+        self.result_table.setRowCount(len(results))
+        for i, result in enumerate(results):
+            values = [result["endpoint_name"], result["method"], result["status"],
+                      result["http_status"], result["elapsed_ms"], result["detail"]]
+            for column, value in enumerate(values):
+                self.result_table.setItem(i, column, QTableWidgetItem(
+                    "" if value is None else str(value)))
         self.log_text.setPlainText("\n".join(
             f"[{r['status']}] {r['method']} {r['url']} ({r['http_status']}) {r['detail']}"
             for r in results))
