@@ -102,9 +102,11 @@ class RunWorker(QThread):
                             extraction_rules=self.extraction_rules.get(key, []),
                             captured_variables=self.variables,
                             client=client)
+                    attempts = []
                     result = execute_with_retries(
                         request_once, endpoint, self.retry_policy,
-                        cancelled=self.cancel_event.is_set)
+                        cancelled=self.cancel_event.is_set,
+                        on_attempt=attempts.append)
                     if result is None:
                         status = "CANCELLED"
                         break
@@ -138,7 +140,8 @@ class RunWorker(QThread):
                             result["status"] = "ERROR"
                             result["detail"] = f"{selected_profile} 토큰 갱신 실패"
                     self.storage.add_result(
-                        self.run_id, endpoint.name, endpoint.method, endpoint.url, **result)
+                        self.run_id, endpoint.name, endpoint.method, endpoint.url,
+                        **result, retry_count=max(0, len(attempts) - 1))
                     self.progress.emit(endpoint.name, result["status"])
                     self.step_result.emit(step_index, len(self.endpoints), endpoint.name, result["status"])
                     if self.cancel_event.is_set():
