@@ -23,6 +23,7 @@ from .scenarios import resolve_steps, validate_steps, should_stop
 from .retry import retry_candidates
 from .run_comparison import compare_runs
 from .comparison_reports import export_comparison, summarize
+from .history_dashboard import build_dashboard
 
 
 class RunWorker(QThread):
@@ -161,6 +162,7 @@ class MainWindow(QMainWindow):
             ("응답 변수 추출", self.configure_extractions),
             ("시나리오 관리", self.manage_scenarios),
             ("실행 회차 비교", self.compare_run_history),
+            ("실행 결과 대시보드", self.show_dashboard),
             ("테스트 실행", self.start_run),
         ]:
             button = QPushButton(label)
@@ -660,6 +662,57 @@ class MainWindow(QMainWindow):
         if self.current_project():
             for run in self.storage.runs(self.current_project()):
                 self.history.addItem(f"{run['started_at']}  [{run['status']}]  {run['id']}")
+
+    def show_dashboard(self):
+        project = self.current_project()
+        if not project:
+            QMessageBox.warning(self, "프로젝트 필요", "프로젝트를 선택하세요.")
+            return
+        runs = self.storage.runs(project)
+        completed = [run for run in runs if run["status"] != "PENDING"][:30]
+        if not completed:
+            QMessageBox.information(self, "실행 이력 없음", "완료된 실행 이력이 없습니다.")
+            return
+        dashboard = build_dashboard(
+            completed, {run["id"]: self.storage.results(run["id"]) for run in completed})
+        dialog = QDialog(self)
+        dialog.setWindowTitle("실행 결과 대시보드 — 최근 30회")
+        dialog.resize(1020, 680)
+        layout = QVBoxLayout(dialog)
+        rate = dashboard["failure_rate"]
+        avg = dashboard["avg_ms"]
+        layout.addWidget(QLabel(
+            f"실행 {dashboard['runs']}회  |  요청 {dashboard['executed']}건  |  "
+            f"실패 {dashboard['failures']}건  |  SKIPPED {dashboard['skipped']}건  |  "
+            f"실패율 {rate if rate is not None else '—'}%  |  "
+            f"평균 {avg if avg is not None else '—'}ms"))
+        tabs = QTabWidget()
+        trend = QTableWidget(len(dashboard["timeline"]), 7)
+        trend.setHorizontalHeaderLabels(
+            ["실행 시각", "회차명", "PASS", "실패", "SKIPPED", "실패율(%)", "평균(ms)"])
+        trend.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        for i, run in enumerate(dashboard["timeline"]):
+            values = [run["started_at"], run["name"], run["pass"], run["fail"],
+                      run["skipped"], run["failure_rate"], run["avg_ms"]]
+            for j, value in enumerate(values):
+                trend.setItem(i, j, QTableWidgetItem("—" if value is None else str(value)))
+        tabs.addTab(trend, "회차별 추이")
+        apis = QTableWidget(len(dashboard["apis"]), 8)
+        apis.setHorizontalHeaderLabels(
+            ["API", "Method", "PASS", "실패", "SKIPPED", "실패율(%)", "평균(ms)", "최근 결과"])
+        apis.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        for i, api in enumerate(dashboard["apis"]):
+            values = [api["name"], api["method"], api["pass"], api["fail"],
+                      api["skipped"], api["failure_rate"], api["avg_ms"], api["latest"]]
+            for j, value in enumerate(values):
+                apis.setItem(i, j, QTableWidgetItem("—" if value is None else str(value)))
+        tabs.addTab(apis, "API별 실패율·응답시간")
+        layout.addWidget(tabs)
+        layout.addWidget(QLabel("실패율 = (FAIL + ERROR + BLOCKED) / (PASS + FAIL + ERROR + BLOCKED). SKIPPED 제외."))
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def compare_run_history(self):
         if not self.current_project():
