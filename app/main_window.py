@@ -428,7 +428,7 @@ class MainWindow(QMainWindow):
         key = self.endpoint_keys[index]
         existing = self.storage.get_response_assertions(self.current_project(), key)
         raw, ok = QInputDialog.getMultiLineText(
-            self, "응답 검증 규칙", "JSON 규칙 배열 (status / exists / equals)",
+            self, "응답 검증 규칙", "JSON 규칙 배열 (status / exists / equals / value_type / range / length)\n배열 경로 예: data.users[0].id",
             json.dumps(existing, ensure_ascii=False, indent=2))
         if not ok:
             return
