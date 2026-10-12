@@ -79,6 +79,9 @@ class RunWorker(QThread):
                 ("ADMIN", self.admin_credentials, needs_admin_token),
             )
             for profile, credentials, checker in profiles:
+                if self.cancel_event.is_set():
+                    status = "CANCELLED"
+                    return
                 if credentials and any(checker(e) for _, e in self.endpoints):
                     try:
                         sessions[profile] = login_tokens(
@@ -88,6 +91,9 @@ class RunWorker(QThread):
                             config=self.auth_configs.get(profile),
                             token_paths=self.token_paths.get(profile))
                         self.progress.emit(f"{profile} 로그인", "PASS")
+                        if self.cancel_event.is_set():
+                            status = "CANCELLED"
+                            return
                     except LoginError as exc:
                         self.progress.emit(f"{profile} 로그인", f"ERROR: {exc}")
                         status = "ERROR"
@@ -154,6 +160,7 @@ class RunWorker(QThread):
                             self.progress.emit(f"{selected_profile} 토큰 갱신", f"ERROR: {exc}")
                             result["status"] = "ERROR"
                             result["detail"] = f"{selected_profile} 토큰 갱신 실패"
+                    # Persist the in-flight request result, then honor cancellation.
                     self.storage.add_result(
                         self.run_id, endpoint.name, endpoint.method, endpoint.url,
                         **result, retry_count=max(0, len(attempts) - 1))
