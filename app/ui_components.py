@@ -1,4 +1,5 @@
 """Composable developer-tool UI primitives: navigation, header, searchable API explorer."""
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
                              QPushButton, QComboBox, QLineEdit, QTreeWidget)
 
@@ -68,7 +69,8 @@ class EndpointExplorer(QWidget):
         root = self.tree.invisibleRootItem()
 
         def visit(item):
-            matched = not query or any(
+            metadata = item.data(0, Qt.ItemDataRole.UserRole + 1) or ""
+            matched = not query or query in str(metadata).casefold() or any(
                 query in item.text(col).casefold() for col in range(item.columnCount()))
             child_results = [visit(item.child(i)) for i in range(item.childCount())]
             child_match = any(child_results)
