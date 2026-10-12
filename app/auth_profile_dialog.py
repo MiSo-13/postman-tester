@@ -1,7 +1,7 @@
 """Per-project authentication setup dialog, credentials only kept in memory."""
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QComboBox,
     QLineEdit, QDialogButtonBox, QPushButton, QMessageBox, QLabel)
-from .user_auth import validate_login_config, login_tokens
+from .user_auth import validate_login_config, login_tokens, LoginError
 from .auth_profile import endpoint_login_choices, validate_profile_options
 
 
