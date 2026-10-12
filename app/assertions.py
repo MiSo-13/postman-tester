@@ -35,7 +35,7 @@ def validate_rules(rules):
             entry["expected"] = rule["expected"]
         if kind == "value_type":
             expected = rule.get("expected")
-            if expected not in VALUE_TYPES:
+            if not isinstance(expected, str) or expected not in VALUE_TYPES:
                 raise ValueError("지원하지 않는 JSON 타입입니다.")
             entry["expected"] = expected
         if kind in ("range", "length"):
