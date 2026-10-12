@@ -113,6 +113,27 @@ class Storage:
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM projects ORDER BY created_at")]
 
+    def delete_project(self, project_id: str) -> list[str]:
+        """Atomically delete project-owned DB records; return associated run IDs.
+
+        Generated report directories are managed separately by the caller.
+        """
+        with self.connect() as db:
+            if db.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone() is None:
+                raise ValueError("삭제할 프로젝트가 존재하지 않습니다.")
+            run_ids = [row["id"] for row in db.execute(
+                "SELECT id FROM test_runs WHERE project_id=?", (project_id,))]
+            for table in ("reports", "run_results"):
+                db.execute(f"DELETE FROM {table} WHERE run_id IN "
+                           "(SELECT id FROM test_runs WHERE project_id=?)", (project_id,))
+            for table in ("test_runs", "imports", "auth_configs",
+                          "auth_profile_options", "response_extractions",
+                          "response_assertions", "request_overrides",
+                          "scenarios", "project_base_urls"):
+                db.execute(f"DELETE FROM {table} WHERE project_id=?", (project_id,))
+            db.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        return run_ids
+
     def get_project_base_url(self, project_id: str):
         with self.connect() as db:
             row = db.execute("SELECT base_url FROM project_base_urls WHERE project_id=?", (project_id,)).fetchone()
