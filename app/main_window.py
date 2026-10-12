@@ -37,6 +37,7 @@ class RunWorker(QThread):
     progress = pyqtSignal(str, str)
     finished_run = pyqtSignal(str)
     step_result = pyqtSignal(int, int, str, str)
+    response_preview = pyqtSignal(str, int, str)
 
     def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None, extraction_rules=None, stop_on_failure=False, retry_policy=None):
         super().__init__()
@@ -103,7 +104,8 @@ class RunWorker(QThread):
                             assertions=self.response_rules.get(key, []),
                             extraction_rules=self.extraction_rules.get(key, []),
                             captured_variables=self.variables,
-                            client=client)
+                            client=client,
+                            preview_callback=lambda text, row=step_index - 1: self.response_preview.emit(self.run_id, row, text))
                     attempts = []
                     result = execute_with_retries(
                         request_once, endpoint, self.retry_policy,
@@ -137,7 +139,8 @@ class RunWorker(QThread):
                                 assertions=self.response_rules.get(key, []),
                                 extraction_rules=self.extraction_rules.get(key, []),
                                 captured_variables=self.variables,
-                                client=client)
+                                client=client,
+                                preview_callback=lambda text, row=step_index - 1: self.response_preview.emit(self.run_id, row, text))
                         except LoginError as exc:
                             self.progress.emit(f"{selected_profile} 토큰 갱신", f"ERROR: {exc}")
                             result["status"] = "ERROR"
@@ -176,6 +179,8 @@ class MainWindow(QMainWindow):
         self.environment = {}
         self.endpoint_keys = []
         self.selected_endpoint_index = None
+        self.response_previews = {}
+        self.active_preview_run = None
         self.setWindowTitle("Postman Tester")
         self.resize(1150, 760)
         self.build_ui()
@@ -263,11 +268,17 @@ class MainWindow(QMainWindow):
             ["API", "Method", "상태", "HTTP", "시간(ms)", "상세"])
         self.result_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.result_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.response_inspector = QTextEdit()
+        self.response_inspector.setReadOnly(True)
+        self.response_inspector.setPlainText("실행 결과를 선택하면 응답 미리보기를 확인할 수 있습니다.")
+        self.result_table.itemSelectionChanged.connect(self.show_selected_response)
         self.retry_button = QPushButton("선택한 실패 읽기 API 재실행")
         self.retry_button.clicked.connect(self.retry_failed)
         results_panel = QWidget()
         results_layout = QVBoxLayout(results_panel)
         results_layout.addWidget(self.result_table)
+        results_layout.addWidget(QLabel("응답 미리보기 (메모리 전용 · 문자열 마스킹)"))
+        results_layout.addWidget(self.response_inspector)
         results_layout.addWidget(self.retry_button)
         self.report_list = QListWidget()
         for name, widget in [("Request 미리보기", self.request_text),
@@ -725,6 +736,8 @@ class MainWindow(QMainWindow):
             for key, _ in endpoints
         }
         run_id = self.storage.create_run(self.current_project(), scenario_name or '기본 실행')
+        self.response_previews.clear()
+        self.active_preview_run = run_id
         self.log_text.append(f'Run ID: {run_id}')
         self.worker = RunWorker(
             self.storage, run_id, endpoints, self.environment.copy(), self.settings,
@@ -734,6 +747,7 @@ class MainWindow(QMainWindow):
         self.worker.step_result.connect(lambda i, total, name, state: (
             self.run_progress.setValue(round(i / total * 100)),
             self.log_text.append(f"단계 {i}/{total}: [{state}] {name}")))
+        self.worker.response_preview.connect(self.record_response_preview)
         self.worker.finished_run.connect(self.run_finished)
         self.run_progress.setValue(0)
         self.cancel_button.setEnabled(True)
@@ -901,6 +915,22 @@ class MainWindow(QMainWindow):
             return
         self.start_run(retry_endpoints=candidates)
 
+    def record_response_preview(self, run_id, row, preview):
+        if run_id == self.active_preview_run and 0 <= row < 500:
+            self.response_previews[row] = preview
+            self.show_selected_response()
+
+    def show_selected_response(self):
+        current = self.history.currentItem()
+        run_id = current.text().split()[-1] if current else None
+        selection = self.result_table.selectionModel()
+        indexes = selection.selectedRows() if selection else []
+        preview = (self.response_previews.get(indexes[0].row())
+                   if run_id == self.active_preview_run and indexes else None)
+        self.response_inspector.setPlainText(
+            preview if preview else
+            "응답 원문은 저장되지 않습니다. 새 실행에서 선택한 API만 미리보기가 제공됩니다.")
+
     def show_history(self, current, previous):
         self.report_list.clear()
         self.result_table.setRowCount(0)
@@ -918,6 +948,7 @@ class MainWindow(QMainWindow):
         self.log_text.setPlainText("\n".join(
             f"[{r['status']}] {r['method']} {r['url']} ({r['http_status']}) {r['detail']}"
             for r in results))
+        self.show_selected_response()
         for report in self.storage.reports(run_id):
             self.report_list.addItem(f"{report['format'].upper()}  {report['file_path']}")
 

@@ -34,7 +34,8 @@ def execute(endpoint, variables: dict, timeout: float = 20,
             assertions: list | None = None,
             extraction_rules: list | None = None,
             captured_variables: dict | None = None,
-            client: httpx.Client | None = None) -> dict:
+            client: httpx.Client | None = None,
+            preview_callback=None) -> dict:
     """Only send supported request shapes; all checks precede the HTTP call."""
     from .assertions import validate_rules
     try:
@@ -123,6 +124,9 @@ def execute(endpoint, variables: dict, timeout: float = 20,
                     response = active_client.request(method, url, headers=headers, files=multipart)
                 else:
                     response = active_client.request(method, url, headers=headers, content=payload)
+        if preview_callback is not None:
+            from .response_preview import safe_json_preview
+            preview_callback(safe_json_preview(response))
         elapsed = round((time.monotonic() - started) * 1000, 2)
         from .assertions import evaluate_response
         passed, message = evaluate_response(response, assertions)
