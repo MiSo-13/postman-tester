@@ -16,6 +16,9 @@ class StorageStub:
         self.final = None
         self.saved = []
 
+    def get_run(self, run_id):
+        return {"status": "COMPLETED"}
+
     def results(self, run_id):
         return [{
             "endpoint_name": "=1+1",
