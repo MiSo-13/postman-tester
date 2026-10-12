@@ -868,6 +868,13 @@ class MainWindow(QMainWindow):
         if not self.current_project() or not self.endpoints:
             QMessageBox.warning(self, "실행 불가", "프로젝트와 Collection을 선택하세요.")
             return
+        if (any("{{baseUrl}}" in endpoint.url for endpoint in self.endpoints)
+                and not self.environment.get("baseUrl")):
+            QMessageBox.warning(
+                self, "Base URL 설정 필요",
+                "Collection이 {{baseUrl}}을 사용하지만 설정값이 없습니다.\\n"
+                "사이드바의 'Environment 변수 편집'에서 baseUrl을 입력하세요.")
+            return
         if planned_endpoints is not None:
             endpoints = planned_endpoints
             scenario_name = "AI 승인 테스트"
