@@ -27,12 +27,14 @@ def should_retry(method, result, attempt, policy):
 
 
 def execute_with_retries(execute_one, endpoint, policy, cancelled=lambda: False,
-                         sleep=time.sleep):
+                         sleep=time.sleep, on_attempt=None):
     """Retry only explicitly transient failures; never retry writes."""
     for attempt in range(policy.retries + 1):
         if cancelled():
             return None
         result = execute_one()
+        if on_attempt is not None:
+            on_attempt(attempt + 1)
         if not should_retry(endpoint.method, result, attempt, policy):
             return result
         if cancelled():
