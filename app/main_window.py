@@ -29,6 +29,7 @@ from .history_dashboard import build_dashboard
 from .trend_chart import TrendChart
 from .retry_policy import RetryPolicy, execute_with_retries
 from .themes import THEMES, validate_theme, apply_theme
+from .performance_reports import export_performance_report
 
 
 class RunWorker(QThread):
@@ -739,7 +740,9 @@ class MainWindow(QMainWindow):
     def run_finished(self, run_id):
         self.cancel_button.setEnabled(False)
         try:
-            paths = export_reports(self.storage, run_id, self.settings.data_path() / "reports" / run_id)
+            output = self.settings.data_path() / "reports" / run_id
+            paths = export_reports(self.storage, run_id, output)
+            paths.extend(export_performance_report(self.storage, run_id, output))
             self.log_text.append("보고서 보존: " + ", ".join(map(str, paths)))
         except Exception as exc:
             self.log_text.append(f"보고서 오류: {exc}")
