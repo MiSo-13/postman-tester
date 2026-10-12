@@ -920,6 +920,51 @@ class MainWindow(QMainWindow):
             return
         self.start_run(retry_endpoints=candidates)
 
+    def create_assertion_from_response(self):
+        selected = self.history.currentItem()
+        selection = self.result_table.selectionModel()
+        rows = selection.selectedRows() if selection else []
+        if not selected or len(rows) != 1:
+            QMessageBox.warning(self, "결과 선택", "실행 회차와 API 결과 한 행을 선택하세요.")
+            return
+        run_id = selected.text().split()[-1]
+        row = rows[0].row()
+        preview = self.response_previews.get(row) if run_id == self.active_preview_run else None
+        if not preview:
+            QMessageBox.warning(self, "미리보기 없음", "현재 실행의 응답 미리보기가 필요합니다.")
+            return
+        results = self.storage.results(run_id)
+        if row >= len(results):
+            return
+        item = results[row]
+        matches = [i for i, endpoint in enumerate(self.endpoints)
+                   if endpoint.name == item["endpoint_name"]
+                   and endpoint.method == item["method"]
+                   and endpoint.url == item["url"]]
+        if len(matches) != 1:
+            QMessageBox.warning(self, "API 식별 불가",
+                "Collection에서 API를 유일하게 식별할 수 없습니다. 원본 API를 선택해 규칙을 편집하세요.")
+            return
+        dialog = ResponseFieldRuleDialog(preview, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        key = self.endpoint_keys[matches[0]]
+        existing = self.storage.get_response_assertions(self.current_project(), key)
+        try:
+            suggested = validate_rules([*existing, dialog.rule])
+        except ValueError as exc:
+            QMessageBox.warning(self, "규칙 제한", str(exc))
+            return
+        editor = AssertionRuleEditor(suggested, self)
+        if editor.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self.storage.save_response_assertions(self.current_project(), key, editor.rules)
+        except ValueError as exc:
+            QMessageBox.warning(self, "저장 실패", str(exc))
+            return
+        self.statusBar().showMessage("응답에서 생성한 검증 규칙을 저장했습니다.")
+
     def record_response_preview(self, run_id, row, preview):
         if run_id == self.active_preview_run and 0 <= row < 500:
             self.response_previews[row] = preview
