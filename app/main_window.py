@@ -246,6 +246,7 @@ class MainWindow(QMainWindow):
         self.theme_selector.setCurrentIndex(self.theme_selector.findData(self.theme))
         self.theme_selector.currentIndexChanged.connect(self.change_theme)
         top.addWidget(self.theme_selector)
+        self.project_buttons = []
         for label, callback in [
             ("새 프로젝트", self.add_project), ("Collection Import", self.import_collection),
             ("Environment Import", self.import_environment),
@@ -261,6 +262,8 @@ class MainWindow(QMainWindow):
         ]:
             button = QPushButton(label)
             button.clicked.connect(callback)
+            if label not in ("새 프로젝트", "예제 JSON 내려받기"):
+                self.project_buttons.append(button)
             top.addWidget(button)
         layout.addLayout(top)
         run_controls = QHBoxLayout()
@@ -372,6 +375,10 @@ class MainWindow(QMainWindow):
 
     def project_changed(self, *_):
         project = self.current_project()
+        # No modal warning is necessary when no project exists.
+        # Keep these actions disabled until a project is selected.
+        for button in self.project_buttons:
+            button.setEnabled(bool(project))
         self.tree.clear()
         self.endpoints = []
         self.endpoint_keys = []

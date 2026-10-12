@@ -58,3 +58,14 @@ python -m pytest -q
 자동 테스트는 HTTP 모킹을 사용하므로 실제 서비스 환경의 로그인, 네트워크, 인증 정책까지 보증하지 않습니다. Windows/Linux GUI 및 패키징 검증도 배포 전에 별도로 수행해야 합니다.
 
 [개발 계획](docs/IMPLEMENTATION_PLAN.md)
+
+## Linux / Chromebook Wayland 안내창 종료 문제
+
+프로젝트가 없는 경우 프로젝트가 필요한 기능 버튼이 비활성화됩니다. Wayland 환경에서 Qt 안내창을 닫은 뒤 앱이 종료되거나 `The Wayland connection broke` 메시지가 나타나면 아래처럼 X11(XWayland) 백엔드를 선택해 실행하세요.
+
+```bash
+python main.py --x11
+# 동일한 대안: QT_QPA_PLATFORM=xcb python main.py
+```
+
+Linux 환경에 Qt XCB 플러그인 및 해당 시스템 라이브러리가 설치되어 있어야 합니다. `--x11`은 앱이 Qt를 불러오기 전에 백엔드를 선택하며 Wayland 자체 오류를 해결하는 것은 아닙니다.
