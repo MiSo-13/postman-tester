@@ -22,6 +22,7 @@ from .request_overrides import endpoint_key, validate_raw_json
 from .scenarios import resolve_steps, validate_steps, should_stop
 from .retry import retry_candidates
 from .run_comparison import compare_runs
+from .comparison_reports import export_comparison, summarize
 
 
 class RunWorker(QThread):
@@ -690,11 +691,9 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("실행 회차 비교")
         dialog.resize(900, 550)
         layout = QVBoxLayout(dialog)
-        summary = {}
-        for item in changes:
-            summary[item["change"]] = summary.get(item["change"], 0) + 1
+        summary = summarize(changes)
         layout.addWidget(QLabel(" | ".join(
-            f"{k}: {v}" for k, v in sorted(summary.items())) or "비교 대상 없음"))
+            f"{k}: {v}" for k, v in summary.items()) or "비교 대상 없음"))
         table = QTableWidget(len(changes), 7)
         table.setHorizontalHeaderLabels(
             ["API", "Method", "순번", "기준", "비교", "변화", "시간차(ms)"])
@@ -706,6 +705,23 @@ class MainWindow(QMainWindow):
                 table.setItem(row, col, QTableWidgetItem(
                     "—" if value is None else str(value)))
         layout.addWidget(table)
+        export_button = QPushButton("비교 보고서 HTML·Excel 저장")
+        def export_selected_comparison():
+            directory = QFileDialog.getExistingDirectory(
+                dialog, "비교 보고서 저장 위치",
+                str(self.settings.data_path() / "reports"))
+            if not directory:
+                return
+            try:
+                paths = export_comparison(
+                    self.storage, runs[i]["id"], runs[j]["id"], Path(directory))
+            except (ValueError, OSError) as exc:
+                QMessageBox.warning(dialog, "보고서 저장 실패", str(exc))
+                return
+            QMessageBox.information(dialog, "저장 완료",
+                "저장된 보고서:\\n" + "\\n".join(map(str, paths)))
+        export_button.clicked.connect(export_selected_comparison)
+        layout.addWidget(export_button)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
