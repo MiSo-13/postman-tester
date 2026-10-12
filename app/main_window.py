@@ -20,6 +20,7 @@ from .templates import save_examples
 from .runner import execute
 from .reports import export_reports
 from .user_auth import login_tokens, refresh_tokens, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
+from .postman_auth_config import clean_environment, discover_auth
 from .request_overrides import endpoint_key, validate_raw_json
 from .scenarios import resolve_steps, validate_steps, should_stop
 from .retry import retry_candidates
@@ -41,7 +42,7 @@ class RunWorker(QThread):
     step_result = pyqtSignal(int, int, str, str)
     response_preview = pyqtSignal(str, int, str)
 
-    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None, extraction_rules=None, stop_on_failure=False, retry_policy=None):
+    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None, extraction_rules=None, stop_on_failure=False, retry_policy=None, refresh_paths=None):
         super().__init__()
         self.storage = storage
         self.run_id = run_id
@@ -57,6 +58,7 @@ class RunWorker(QThread):
         self.stop_on_failure = stop_on_failure
         self.cancel_event = Event()
         self.retry_policy = retry_policy or RetryPolicy()
+        self.refresh_paths = refresh_paths or {}
 
     def cancel(self):
         self.cancel_event.set()
@@ -125,7 +127,8 @@ class RunWorker(QThread):
                                 selected_profile, self.variables.get("baseUrl", ""),
                                 sessions[selected_profile][1],
                                 timeout=self.settings.values["default_timeout_seconds"],
-                                verify_ssl=self.settings.values["verify_ssl"])
+                                verify_ssl=self.settings.values["verify_ssl"],
+                                endpoint=self.refresh_paths.get(selected_profile))
                             self.progress.emit(f"{selected_profile} 토큰 갱신", "PASS")
                             user_token = sessions["USER"][0] if sessions["USER"] else None
                             admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
@@ -179,6 +182,8 @@ class MainWindow(QMainWindow):
         self.storage = Storage(self.settings.data_path())
         self.endpoints = []
         self.environment = {}
+        self.auth_discovered = {}
+        self.refresh_discovered = {}
         self.endpoint_keys = []
         self.selected_endpoint_index = None
         self.response_previews = {}
@@ -337,6 +342,8 @@ class MainWindow(QMainWindow):
         self.endpoint_keys = []
         self.selected_endpoint_index = None
         self.environment = {}
+        self.auth_discovered = {}
+        self.refresh_discovered = {}
         self.body_editor.blockSignals(True)
         self.body_editor.clear()
         self.body_editor.blockSignals(False)
@@ -354,13 +361,13 @@ class MainWindow(QMainWindow):
         environment = self.storage.latest_import(project, "environment")
         if environment:
             doc = json.loads(environment["content"])
-            self.environment = {v["key"]: v.get("value", "") for v in doc.get("values", [])
-                                if v.get("enabled", True) and "key" in v}
+            _, self.environment = clean_environment(doc)
         self.refresh_history()
 
     def load_collection_document(self, document):
         from .postman import endpoints_from_document
         self.endpoints = endpoints_from_document(document)
+        self.auth_discovered, self.refresh_discovered = discover_auth(self.endpoints)
         seen = {}
         self.endpoint_keys = []
         for endpoint in self.endpoints:
@@ -405,8 +412,8 @@ class MainWindow(QMainWindow):
         if not filename:
             return
         try:
-            self.environment = parse_environment(filename)
             document = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
+            _, self.environment = clean_environment(document)
             self.storage.save_import(self.current_project(), "environment", Path(filename).name, document)
             self.statusBar().showMessage(f"변수 {len(self.environment)}개 로드 완료")
         except (ValueError, OSError, json.JSONDecodeError) as exc:
@@ -729,6 +736,7 @@ class MainWindow(QMainWindow):
         }
         auth_configs = {
             profile: self.storage.get_auth_config(self.current_project(), profile)
+                     or self.auth_discovered.get(profile)
                      or DEFAULT_LOGIN_CONFIGS[profile]
             for profile in ("USER", "ADMIN")
         }
@@ -747,7 +755,8 @@ class MainWindow(QMainWindow):
         self.worker = RunWorker(
             self.storage, run_id, endpoints, self.environment.copy(), self.settings,
             body_overrides, user_credentials, admin_credentials, auth_configs, response_rules, extraction_rules,
-            stop_on_failure=stop_on_failure, retry_policy=retry_policy)
+            stop_on_failure=stop_on_failure, retry_policy=retry_policy,
+            refresh_paths=self.refresh_discovered)
         self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
         self.worker.step_result.connect(lambda i, total, name, state: (
             self.run_progress.setValue(round(i / total * 100)),
