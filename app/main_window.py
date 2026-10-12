@@ -21,6 +21,7 @@ from .runner import execute
 from .reports import export_reports
 from .user_auth import login_tokens, refresh_tokens, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
 from .postman_auth_config import clean_environment, discover_auth
+from .auth_profile_dialog import AuthProfileDialog
 from .request_overrides import endpoint_key, validate_raw_json
 from .scenarios import resolve_steps, validate_steps, should_stop
 from .retry import retry_candidates
@@ -42,7 +43,7 @@ class RunWorker(QThread):
     step_result = pyqtSignal(int, int, str, str)
     response_preview = pyqtSignal(str, int, str)
 
-    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None, extraction_rules=None, stop_on_failure=False, retry_policy=None, refresh_paths=None):
+    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None, extraction_rules=None, stop_on_failure=False, retry_policy=None, refresh_paths=None, token_paths=None):
         super().__init__()
         self.storage = storage
         self.run_id = run_id
@@ -59,6 +60,7 @@ class RunWorker(QThread):
         self.cancel_event = Event()
         self.retry_policy = retry_policy or RetryPolicy()
         self.refresh_paths = refresh_paths or {}
+        self.token_paths = token_paths or {}
 
     def cancel(self):
         self.cancel_event.set()
@@ -78,7 +80,8 @@ class RunWorker(QThread):
                             profile, self.variables.get("baseUrl", ""), *credentials,
                             timeout=self.settings.values["default_timeout_seconds"],
                             verify_ssl=self.settings.values["verify_ssl"],
-                            config=self.auth_configs.get(profile))
+                            config=self.auth_configs.get(profile),
+                            token_paths=self.token_paths.get(profile))
                         self.progress.emit(f"{profile} 로그인", "PASS")
                     except LoginError as exc:
                         self.progress.emit(f"{profile} 로그인", f"ERROR: {exc}")
@@ -128,7 +131,8 @@ class RunWorker(QThread):
                                 sessions[selected_profile][1],
                                 timeout=self.settings.values["default_timeout_seconds"],
                                 verify_ssl=self.settings.values["verify_ssl"],
-                                endpoint=self.refresh_paths.get(selected_profile))
+                                endpoint=self.refresh_paths.get(selected_profile),
+                                token_paths=self.token_paths.get(selected_profile))
                             self.progress.emit(f"{selected_profile} 토큰 갱신", "PASS")
                             user_token = sessions["USER"][0] if sessions["USER"] else None
                             admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
@@ -182,6 +186,7 @@ class MainWindow(QMainWindow):
         self.storage = Storage(self.settings.data_path())
         self.endpoints = []
         self.environment = {}
+        self.session_credentials = {}
         self.auth_discovered = {}
         self.refresh_discovered = {}
         self.endpoint_keys = []
@@ -342,6 +347,7 @@ class MainWindow(QMainWindow):
         self.endpoint_keys = []
         self.selected_endpoint_index = None
         self.environment = {}
+        self.session_credentials.clear()
         self.auth_discovered = {}
         self.refresh_discovered = {}
         self.body_editor.blockSignals(True)
@@ -422,27 +428,25 @@ class MainWindow(QMainWindow):
     def configure_logins(self):
         project = self.current_project()
         if not project:
-            QMessageBox.warning(self, "프로젝트 필요", "프로젝트를 먼저 만드세요.")
+            QMessageBox.warning(self, "프로젝트 필요", "프로젝트를 먼저 선택하세요.")
             return
         for profile in ("USER", "ADMIN"):
-            original = self.storage.get_auth_config(project, profile) or DEFAULT_LOGIN_CONFIGS[profile]
-            updated = {}
-            for field, label in (
-                ("endpoint", "로그인 Endpoint (상대 경로)"),
-                ("identifier_key", "계정 ID 요청 필드명"),
-                ("password_key", "비밀번호 요청 필드명"),
-            ):
-                value, ok = QInputDialog.getText(
-                    self, f"{profile} 로그인 설정", label, text=original[field])
-                if not ok:
-                    return
-                updated[field] = value.strip()
-            try:
-                self.storage.save_auth_config(project, profile, updated)
-            except ValueError as exc:
-                QMessageBox.warning(self, "인증 설정 오류", str(exc))
+            config = (self.storage.get_auth_config(project, profile)
+                      or self.auth_discovered.get(profile)
+                      or DEFAULT_LOGIN_CONFIGS[profile])
+            options = self.storage.get_auth_profile_options(project, profile)
+            dialog = AuthProfileDialog(
+                profile, self.endpoints, config, options,
+                self.session_credentials.get(profile),
+                self.environment.get("baseUrl", ""),
+                self.settings.values["default_timeout_seconds"],
+                self.settings.values["verify_ssl"], self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
-        QMessageBox.information(self, "저장 완료", "USER/ADMIN 로그인 설정을 저장했습니다.\\n계정과 비밀번호는 저장하지 않습니다.")
+            self.storage.save_auth_config(project, profile, dialog.config)
+            self.storage.save_auth_profile_options(project, profile, dialog.options)
+            self.session_credentials[profile] = dialog.credentials
+        self.statusBar().showMessage("인증 프로필 설정이 저장되었습니다. 비밀번호는 세션에만 유지됩니다.")
 
     def configure_assertions(self):
         index = self.selected_endpoint_index
@@ -699,8 +703,8 @@ class MainWindow(QMainWindow):
             if not ok:
                 return
         retry_policy = RetryPolicy(attempts, delay)
-        user_credentials = None
-        if any(needs_user_token(e) for _, e in endpoints):
+        user_credentials = self.session_credentials.get("USER")
+        if not user_credentials and any(needs_user_token(e) for _, e in endpoints):
             answer = QMessageBox.question(
                 self, "USER 자동 로그인",
                 "선택한 API에 USER Bearer 인증이 필요합니다.\n"
@@ -715,8 +719,8 @@ class MainWindow(QMainWindow):
                 if not ok or not password:
                     return
                 user_credentials = (email.strip(), password)
-        admin_credentials = None
-        if any(needs_admin_token(e) for _, e in endpoints):
+        admin_credentials = self.session_credentials.get("ADMIN")
+        if not admin_credentials and any(needs_admin_token(e) for _, e in endpoints):
             answer = QMessageBox.question(
                 self, "ADMIN 자동 로그인",
                 "관리자 인증이 필요한 API가 있습니다. 로그인하시겠습니까?\n"
@@ -740,6 +744,8 @@ class MainWindow(QMainWindow):
                      or DEFAULT_LOGIN_CONFIGS[profile]
             for profile in ("USER", "ADMIN")
         }
+        token_paths = {profile: self.storage.get_auth_profile_options(self.current_project(), profile)
+                       for profile in ("USER", "ADMIN")}
         response_rules = {
             key: self.storage.get_response_assertions(self.current_project(), key)
             for key, _ in endpoints
@@ -756,7 +762,7 @@ class MainWindow(QMainWindow):
             self.storage, run_id, endpoints, self.environment.copy(), self.settings,
             body_overrides, user_credentials, admin_credentials, auth_configs, response_rules, extraction_rules,
             stop_on_failure=stop_on_failure, retry_policy=retry_policy,
-            refresh_paths=self.refresh_discovered)
+            refresh_paths=self.refresh_discovered, token_paths=token_paths)
         self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
         self.worker.step_result.connect(lambda i, total, name, state: (
             self.run_progress.setValue(round(i / total * 100)),
