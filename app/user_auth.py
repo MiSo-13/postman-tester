@@ -99,7 +99,7 @@ REFRESH_ENDPOINTS = {
 }
 
 
-def _tokens_from_response(response, *, require_refresh=False):
+def _tokens_from_response(response, *, require_refresh=False, paths=None):
     if response.status_code != 200:
         raise LoginError(f"인증 API HTTP {response.status_code}")
     try:
@@ -111,8 +111,17 @@ def _tokens_from_response(response, *, require_refresh=False):
     result = data.get("data")
     if not isinstance(result, dict):
         raise LoginError("인증 API에 data 객체가 없습니다.")
-    access = result.get("accessToken")
-    refresh = result.get("refreshToken")
+    if paths:
+        from .json_paths import find_path
+        found, access = find_path(data, paths["access_path"])
+        if not found:
+            access = None
+        found, refresh = find_path(data, paths["refresh_path"])
+        if not found:
+            refresh = None
+    else:
+        access = result.get("accessToken")
+        refresh = result.get("refreshToken")
     if not isinstance(access, str) or not access.strip():
         raise LoginError("인증 API에 Access Token이 없습니다.")
     access = re.sub(r"^Bearer\s+", "", access.strip(), flags=re.I)
@@ -129,7 +138,8 @@ def _tokens_from_response(response, *, require_refresh=False):
 
 def login_tokens(profile: str, base_url: str, identifier: str, password: str, *,
                  timeout: float = 20, verify_ssl: bool = True,
-                 config: dict | None = None) -> tuple[str, str | None]:
+                 config: dict | None = None,
+                 token_paths: dict | None = None) -> tuple[str, str | None]:
     """Authenticate and keep both tokens in memory; never persist token values."""
     if profile not in DEFAULT_LOGIN_CONFIGS:
         raise LoginError("알 수 없는 로그인 유형입니다.")
@@ -143,14 +153,15 @@ def login_tokens(profile: str, base_url: str, identifier: str, password: str, *,
             response = client.post(base_url.rstrip("/") + cfg["endpoint"],
                                    json={cfg["identifier_key"]: identifier,
                                          cfg["password_key"]: password})
-        return _tokens_from_response(response)
+        return _tokens_from_response(response, paths=token_paths)
     except httpx.HTTPError as exc:
         raise LoginError(f"로그인 연결 실패: {type(exc).__name__}") from None
 
 
 def refresh_tokens(profile: str, base_url: str, refresh_token: str, *,
                    timeout: float = 20, verify_ssl: bool = True,
-                   endpoint: str | None = None) -> tuple[str, str]:
+                   endpoint: str | None = None,
+                   token_paths: dict | None = None) -> tuple[str, str]:
     """Use refreshToken body; retain the previous refresh token if not rotated."""
     if profile not in REFRESH_ENDPOINTS or not refresh_token:
         raise LoginError("Refresh Token을 사용할 수 없습니다.")
@@ -163,7 +174,7 @@ def refresh_tokens(profile: str, base_url: str, refresh_token: str, *,
         with httpx.Client(timeout=timeout, verify=verify_ssl, follow_redirects=False) as client:
             response = client.post(base_url.rstrip("/") + path,
                                    json={"refreshToken": refresh_token})
-        access, rotated = _tokens_from_response(response)
+        access, rotated = _tokens_from_response(response, paths=token_paths)
         return access, rotated or refresh_token
     except httpx.HTTPError as exc:
         raise LoginError(f"토큰 갱신 연결 실패: {type(exc).__name__}") from None
