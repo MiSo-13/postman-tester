@@ -38,6 +38,7 @@ from .performance_reports import export_performance_report
 from .assertion_editor import AssertionRuleEditor
 from .response_field_dialog import ResponseFieldRuleDialog
 from .assertions import validate_rules
+from .ui_components import ProjectHeader, NavigationSidebar, EndpointExplorer
 
 
 class RunWorker(QThread):
@@ -234,38 +235,50 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-        top = QHBoxLayout()
-        self.projects = QComboBox()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.header = ProjectHeader()
+        self.projects = self.header.projects
         self.projects.currentIndexChanged.connect(self.project_changed)
-        top.addWidget(QLabel("프로젝트"))
-        top.addWidget(self.projects, 2)
-        top.addWidget(QLabel("테마"))
-        self.theme_selector = QComboBox()
+        self.theme_selector = self.header.theme_selector
         for label, key in (("시스템", "system"), ("라이트", "light"), ("다크", "dark")):
             self.theme_selector.addItem(label, key)
         self.theme_selector.setCurrentIndex(self.theme_selector.findData(self.theme))
         self.theme_selector.currentIndexChanged.connect(self.change_theme)
-        top.addWidget(self.theme_selector)
+        layout.addWidget(self.header)
+
+        workspace = QHBoxLayout()
+        workspace.setContentsMargins(0, 0, 0, 0)
+        workspace.setSpacing(0)
         self.project_buttons = []
-        for label, callback in [
-            ("새 프로젝트", self.add_project), ("Collection Import", self.import_collection),
-            ("Environment Import", self.import_environment),
-            ("예제 JSON 내려받기", self.download_examples),
-            ("로그인 설정", self.configure_logins),
-            ("응답 검증 규칙", self.configure_assertions),
-            ("응답 변수 추출", self.configure_extractions),
-            ("시나리오 관리", self.manage_scenarios),
-            ("실행 회차 비교", self.compare_run_history),
-            ("실행 결과 대시보드", self.show_dashboard),
-            ("AI 테스트 계획", self.ai_test_plan),
-            ("테스트 실행", self.start_run),
-        ]:
-            button = QPushButton(label)
-            button.clicked.connect(callback)
+        navigation = [
+            ("워크스페이스", [
+                ("새 프로젝트", self.add_project),
+                ("Collection Import", self.import_collection),
+                ("Environment Import", self.import_environment),
+                ("예제 JSON 내려받기", self.download_examples)]),
+            ("테스트", [
+                ("테스트 실행", self.start_run),
+                ("AI 테스트 계획", self.ai_test_plan),
+                ("시나리오 관리", self.manage_scenarios)]),
+            ("설정", [
+                ("로그인 설정", self.configure_logins),
+                ("응답 검증 규칙", self.configure_assertions),
+                ("응답 변수 추출", self.configure_extractions)]),
+            ("분석", [
+                ("실행 결과 대시보드", self.show_dashboard),
+                ("실행 회차 비교", self.compare_run_history)]),
+        ]
+        self.sidebar = NavigationSidebar(navigation)
+        for label, button in self.sidebar.buttons.items():
             if label not in ("새 프로젝트", "예제 JSON 내려받기"):
                 self.project_buttons.append(button)
-            top.addWidget(button)
-        layout.addLayout(top)
+        workspace.addWidget(self.sidebar)
+        main_panel = QWidget()
+        main_column = QVBoxLayout(main_panel)
+        main_column.setContentsMargins(12, 8, 12, 8)
+        workspace.addWidget(main_panel, 1)
+        layout.addLayout(workspace, 1)
         run_controls = QHBoxLayout()
         self.run_progress = QProgressBar()
         self.run_progress.setRange(0, 100)
@@ -275,13 +288,13 @@ class MainWindow(QMainWindow):
         self.cancel_button.clicked.connect(self.cancel_run)
         run_controls.addWidget(self.run_progress)
         run_controls.addWidget(self.cancel_button)
-        layout.addLayout(run_controls)
+        main_column.addLayout(run_controls)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["API", "Method"])
+        self.explorer = EndpointExplorer()
+        self.tree = self.explorer.tree
         self.tree.currentItemChanged.connect(self.show_endpoint)
-        splitter.addWidget(self.tree)
+        splitter.addWidget(self.explorer)
 
         tabs = QTabWidget()
         self.request_text = QTextEdit()
@@ -339,7 +352,7 @@ class MainWindow(QMainWindow):
             tabs.addTab(widget, name)
         splitter.addWidget(tabs)
         splitter.setSizes([420, 720])
-        layout.addWidget(splitter)
+        main_column.addWidget(splitter)
         self.statusBar().showMessage("Collection을 가져와 시작하세요.")
 
     def change_theme(self, _=None):
@@ -431,6 +444,7 @@ class MainWindow(QMainWindow):
             item.setData(0, Qt.ItemDataRole.UserRole, index)
             parent.addChild(item)
         self.tree.expandAll()
+        self.explorer.apply_filter(self.explorer.search.text())
         self.statusBar().showMessage(f"API {len(self.endpoints)}개 로드 완료")
 
     def import_collection(self):
