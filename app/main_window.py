@@ -982,33 +982,44 @@ class MainWindow(QMainWindow):
         self.response_previews.clear()
         self.active_preview_run = run_id
         self.log_text.append(f'Run ID: {run_id}')
+        self.storage.add_run_log(run_id, "INFO", "테스트 시작")
         self.worker = RunWorker(
             self.storage, run_id, endpoints, self.environment.copy(), self.settings,
             body_overrides, user_credentials, admin_credentials, auth_configs, response_rules, extraction_rules,
             stop_on_failure=stop_on_failure, retry_policy=retry_policy,
             refresh_paths=self.refresh_discovered, token_paths=token_paths,
             adaptive_ai=adaptive_ai)
-        self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
+        self.worker.progress.connect(
+            lambda name, state: self.record_run_log(run_id, "ERROR" if "ERROR" in state else
+                "PASS" if state == "PASS" else "INFO", f"{name}: {state}"))
         self.worker.step_result.connect(lambda i, total, name, state: (
             self.run_progress.setValue(round(i / total * 100)),
-            self.log_text.append(f"단계 {i}/{total}: [{state}] {name}")))
+            self.record_run_log(run_id, state if state in
+                ("PASS", "FAIL", "ERROR", "BLOCKED", "SKIPPED") else "INFO",
+                f"단계 {i}/{total}: {name} — {state}")))
         self.worker.response_preview.connect(self.record_response_preview)
-        self.worker.ai_decision.connect(lambda message: self.log_text.append(message))
+        self.worker.ai_decision.connect(lambda message: self.record_run_log(run_id, "INFO", message))
         self.worker.finished_run.connect(self.run_finished)
         self.run_progress.setValue(0)
         self.cancel_button.setEnabled(True)
         self.worker.start()
         self.statusBar().showMessage("테스트 실행 중")
 
+    def record_run_log(self, run_id, level, message):
+        """Persist the same diagnostic event displayed during a run."""
+        self.storage.add_run_log(run_id, level, message)
+        self.log_text.append(f"[{level}] {message}")
+
     def run_finished(self, run_id):
         self.cancel_button.setEnabled(False)
+        self.record_run_log(run_id, "INFO", "테스트 종료")
         try:
             output = self.settings.data_path() / "reports" / run_id
             paths = export_reports(self.storage, run_id, output)
             paths.extend(export_performance_report(self.storage, run_id, output))
             self.log_text.append("보고서 보존: " + ", ".join(map(str, paths)))
         except Exception as exc:
-            self.log_text.append(f"보고서 오류: {exc}")
+            self.record_run_log(run_id, "ERROR", f"보고서 오류: {type(exc).__name__}")
         self.refresh_history()
         self.statusBar().showMessage("테스트 종료 및 이력 저장 완료")
 
@@ -1231,9 +1242,15 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 self.result_table.setItem(i, column, QTableWidgetItem(
                     "" if value is None else str(value)))
-        self.log_text.setPlainText("\n".join(
-            f"[{r['status']}] {r['method']} {r['url']} ({r['http_status']}) {r['detail']}"
-            for r in results))
+        events = self.storage.run_logs(run_id)
+        if events:
+            self.log_text.setPlainText("\\n".join(
+                f"{event['created_at']} [{event['level']}] {event['message']}"
+                for event in events))
+        else:
+            self.log_text.setPlainText("\\n".join(
+                f"[{r['status']}] {r['method']} {r['url']} ({r['http_status']}) {r['detail']}"
+                for r in results))
         self.show_selected_response()
         for report in self.storage.reports(run_id):
             self.report_list.addItem(f"{report['format'].upper()}  {report['file_path']}")
