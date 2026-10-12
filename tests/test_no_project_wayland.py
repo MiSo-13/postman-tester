@@ -38,3 +38,30 @@ def test_explicit_x11_option_selected_before_qt_import(monkeypatch):
     configure_qt_platform(args)
     assert os.environ["QT_QPA_PLATFORM"] == "xcb"
     assert args == ["main.py"]
+
+
+def test_linux_defaults_to_xcb(monkeypatch):
+    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
+    configure_qt_platform(["main.py"], platform="linux")
+    assert os.environ["QT_QPA_PLATFORM"] == "xcb"
+
+
+def test_linux_keeps_explicit_wayland(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "wayland")
+    configure_qt_platform(["main.py"], platform="linux")
+    assert os.environ["QT_QPA_PLATFORM"] == "wayland"
+
+
+def test_windows_and_macos_keep_native_default(monkeypatch):
+    for platform in ("win32", "darwin"):
+        monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
+        configure_qt_platform(["main.py"], platform=platform)
+        assert "QT_QPA_PLATFORM" not in os.environ
+
+
+def test_explicit_x11_flag_overrides_wayland(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "wayland")
+    argv = ["main.py", "--x11"]
+    configure_qt_platform(argv, platform="linux")
+    assert os.environ["QT_QPA_PLATFORM"] == "xcb"
+    assert argv == ["main.py"]
