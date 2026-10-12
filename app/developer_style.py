@@ -21,6 +21,10 @@ def developer_stylesheet(theme):
         border: 0; border-radius: 6px; padding: 7px 10px; font-weight: 500;
     }}
     QPushButton#NavAction:hover {{ background: {hover}; }}
+    QPushButton#NavAction[active="true"] {{
+        background: {hover}; border-left: 3px solid #4e95eb; font-weight: 700;
+    }}
+    QLabel#PageHeading {{ font-size: 22px; font-weight: 800; color: {text}; }}
     QPushButton#NavAction:disabled {{ color: {muted}; }}
     QWidget#EndpointExplorer {{ background: {surface}; }}
     QFrame#MetricCard {{
