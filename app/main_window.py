@@ -22,6 +22,7 @@ from .runner import execute
 from .reports import export_reports
 from .user_auth import login_tokens, refresh_tokens, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
 from .postman_auth_config import clean_environment, discover_auth
+from .environment_editor import EnvironmentEditor
 from .auth_profile_dialog import AuthProfileDialog
 from .ai_test_dialog import AITestDialog
 from .ai_adaptive import choose_next, move_next
@@ -100,7 +101,11 @@ class RunWorker(QThread):
                             status = "CANCELLED"
                             return
                     except LoginError as exc:
-                        self.progress.emit(f"{profile} 로그인", f"ERROR: {exc}")
+                        detail = str(exc)
+                        self.progress.emit(f"{profile} 로그인", f"ERROR: {detail}")
+                        self.storage.add_result(
+                            self.run_id, f"{profile} 로그인", "POST", "",
+                            status="ERROR", detail=detail)
                         status = "ERROR"
                         return
             with httpx.Client(timeout=self.settings.values["default_timeout_seconds"],
@@ -201,7 +206,13 @@ class RunWorker(QThread):
                             self.ai_decision.emit("AI 재계획 불가: 기존 승인 순서대로 계속합니다.")
         except Exception as exc:
             status = "ERROR"
-            self.progress.emit("실행 오류", str(exc))
+            self.progress.emit("실행 오류", f"{type(exc).__name__}: {exc}")
+            try:
+                self.storage.add_result(
+                    self.run_id, "테스트 실행 오류", "SYSTEM", "",
+                    status="ERROR", detail=type(exc).__name__)
+            except Exception:
+                pass
         finally:
             self.storage.finish_run(self.run_id, status)
             self.finished_run.emit(self.run_id)
@@ -266,6 +277,7 @@ class MainWindow(QMainWindow):
                 ("프로젝트 삭제", self.delete_project),
                 ("Collection Import", self.import_collection),
                 ("Environment Import", self.import_environment),
+                ("Environment 변수 편집", self.edit_environment),
                 ("예제 JSON 내려받기", self.download_examples)]),
             ("테스트", [
                 ("테스트 실행", self.start_run),
@@ -571,9 +583,40 @@ class MainWindow(QMainWindow):
             document = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
             _, self.environment = clean_environment(document)
             self.storage.save_import(self.current_project(), "environment", Path(filename).name, document)
+            saved_base_url = self.storage.get_project_base_url(self.current_project())
+            if saved_base_url:
+                self.environment["baseUrl"] = saved_base_url
             self.statusBar().showMessage(f"변수 {len(self.environment)}개 로드 완료")
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             QMessageBox.critical(self, "Import 오류", str(exc))
+
+    def edit_environment(self):
+        project = self.current_project()
+        if not project:
+            return
+        if hasattr(self, "worker") and self.worker.isRunning():
+            QMessageBox.warning(self, "실행 중", "테스트가 종료된 후 환경변수를 변경하세요.")
+            return
+        dialog = EnvironmentEditor(self.environment, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.variables
+        if "baseUrl" in values and values["baseUrl"].strip():
+            try:
+                from .auth_base_url import validate_base_url
+                validate_base_url(values["baseUrl"])
+            except ValueError as exc:
+                QMessageBox.warning(self, "Base URL 오류", str(exc))
+                return
+        document = {"name": "Edited Environment", "values": [
+            {"key": key, "value": value, "enabled": True}
+            for key, value in values.items()]}
+        self.storage.save_import(project, "environment", "edited-environment.json", document)
+        self.environment = dict(values)
+        # The explicit project base URL must remain consistent with the editor.
+        if "baseUrl" in values and values["baseUrl"].strip():
+            self.storage.save_project_base_url(project, values["baseUrl"])
+        self.statusBar().showMessage(f"Environment 변수 {len(values)}개 저장 완료")
 
     def configure_logins(self):
         project = self.current_project()
@@ -825,6 +868,13 @@ class MainWindow(QMainWindow):
         if not self.current_project() or not self.endpoints:
             QMessageBox.warning(self, "실행 불가", "프로젝트와 Collection을 선택하세요.")
             return
+        if (any("{{baseUrl}}" in endpoint.url for endpoint in self.endpoints)
+                and not self.environment.get("baseUrl")):
+            QMessageBox.warning(
+                self, "Base URL 설정 필요",
+                "Collection이 {{baseUrl}}을 사용하지만 설정값이 없습니다.\\n"
+                "사이드바의 'Environment 변수 편집'에서 baseUrl을 입력하세요.")
+            return
         if planned_endpoints is not None:
             endpoints = planned_endpoints
             scenario_name = "AI 승인 테스트"
@@ -932,33 +982,44 @@ class MainWindow(QMainWindow):
         self.response_previews.clear()
         self.active_preview_run = run_id
         self.log_text.append(f'Run ID: {run_id}')
+        self.storage.add_run_log(run_id, "INFO", "테스트 시작")
         self.worker = RunWorker(
             self.storage, run_id, endpoints, self.environment.copy(), self.settings,
             body_overrides, user_credentials, admin_credentials, auth_configs, response_rules, extraction_rules,
             stop_on_failure=stop_on_failure, retry_policy=retry_policy,
             refresh_paths=self.refresh_discovered, token_paths=token_paths,
             adaptive_ai=adaptive_ai)
-        self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
+        self.worker.progress.connect(
+            lambda name, state: self.record_run_log(run_id, "ERROR" if "ERROR" in state else
+                "PASS" if state == "PASS" else "INFO", f"{name}: {state}"))
         self.worker.step_result.connect(lambda i, total, name, state: (
             self.run_progress.setValue(round(i / total * 100)),
-            self.log_text.append(f"단계 {i}/{total}: [{state}] {name}")))
+            self.record_run_log(run_id, state if state in
+                ("PASS", "FAIL", "ERROR", "BLOCKED", "SKIPPED") else "INFO",
+                f"단계 {i}/{total}: {name} — {state}")))
         self.worker.response_preview.connect(self.record_response_preview)
-        self.worker.ai_decision.connect(lambda message: self.log_text.append(message))
+        self.worker.ai_decision.connect(lambda message: self.record_run_log(run_id, "INFO", message))
         self.worker.finished_run.connect(self.run_finished)
         self.run_progress.setValue(0)
         self.cancel_button.setEnabled(True)
         self.worker.start()
         self.statusBar().showMessage("테스트 실행 중")
 
+    def record_run_log(self, run_id, level, message):
+        """Persist the same diagnostic event displayed during a run."""
+        self.storage.add_run_log(run_id, level, message)
+        self.log_text.append(f"[{level}] {message}")
+
     def run_finished(self, run_id):
         self.cancel_button.setEnabled(False)
+        self.record_run_log(run_id, "INFO", "테스트 종료")
         try:
             output = self.settings.data_path() / "reports" / run_id
             paths = export_reports(self.storage, run_id, output)
             paths.extend(export_performance_report(self.storage, run_id, output))
             self.log_text.append("보고서 보존: " + ", ".join(map(str, paths)))
         except Exception as exc:
-            self.log_text.append(f"보고서 오류: {exc}")
+            self.record_run_log(run_id, "ERROR", f"보고서 오류: {type(exc).__name__}")
         self.refresh_history()
         self.statusBar().showMessage("테스트 종료 및 이력 저장 완료")
 
@@ -1181,9 +1242,15 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 self.result_table.setItem(i, column, QTableWidgetItem(
                     "" if value is None else str(value)))
-        self.log_text.setPlainText("\n".join(
-            f"[{r['status']}] {r['method']} {r['url']} ({r['http_status']}) {r['detail']}"
-            for r in results))
+        events = self.storage.run_logs(run_id)
+        if events:
+            self.log_text.setPlainText("\\n".join(
+                f"{event['created_at']} [{event['level']}] {event['message']}"
+                for event in events))
+        else:
+            self.log_text.setPlainText("\\n".join(
+                f"[{r['status']}] {r['method']} {r['url']} ({r['http_status']}) {r['detail']}"
+                for r in results))
         self.show_selected_response()
         for report in self.storage.reports(run_id):
             self.report_list.addItem(f"{report['format'].upper()}  {report['file_path']}")

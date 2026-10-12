@@ -83,6 +83,14 @@ class Storage:
                 status TEXT NOT NULL, http_status INTEGER,
                 elapsed_ms REAL, detail TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS run_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES test_runs(id),
+                created_at TEXT NOT NULL,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_run_logs_run ON run_logs(run_id, id);
             CREATE TABLE IF NOT EXISTS reports (
                 id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES test_runs(id),
                 format TEXT NOT NULL, file_path TEXT NOT NULL, created_at TEXT NOT NULL
@@ -123,7 +131,7 @@ class Storage:
                 raise ValueError("삭제할 프로젝트가 존재하지 않습니다.")
             run_ids = [row["id"] for row in db.execute(
                 "SELECT id FROM test_runs WHERE project_id=?", (project_id,))]
-            for table in ("reports", "run_results"):
+            for table in ("run_logs", "reports", "run_results"):
                 db.execute(f"DELETE FROM {table} WHERE run_id IN "
                            "(SELECT id FROM test_runs WHERE project_id=?)", (project_id,))
             for table in ("test_runs", "imports", "auth_configs",
@@ -197,6 +205,21 @@ class Storage:
     def results(self, run_id: str) -> list[dict]:
         with self.connect() as db:
             return [dict(r) for r in db.execute("SELECT * FROM run_results WHERE run_id=?", (run_id,))]
+
+    def add_run_log(self, run_id: str, level: str, message: str):
+        """Store bounded operational diagnostics, never request/response bodies."""
+        if level not in ("INFO", "PASS", "FAIL", "ERROR", "BLOCKED", "SKIPPED"):
+            raise ValueError("지원하지 않는 로그 수준입니다.")
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO run_logs(run_id, created_at, level, message) VALUES(?,?,?,?)",
+                (run_id, utc_now(), level, str(message)[:1000]))
+
+    def run_logs(self, run_id: str) -> list[dict]:
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT created_at,level,message FROM run_logs WHERE run_id=? ORDER BY id",
+                (run_id,))]
 
     def save_report(self, run_id: str, fmt: str, path: Path):
         with self.connect() as db:
