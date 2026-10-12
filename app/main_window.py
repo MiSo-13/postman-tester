@@ -27,6 +27,7 @@ from .run_comparison import compare_runs
 from .comparison_reports import export_comparison, summarize
 from .history_dashboard import build_dashboard
 from .trend_chart import TrendChart
+from .retry_policy import RetryPolicy, execute_with_retries
 
 
 class RunWorker(QThread):
@@ -34,7 +35,7 @@ class RunWorker(QThread):
     finished_run = pyqtSignal(str)
     step_result = pyqtSignal(int, int, str, str)
 
-    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None, extraction_rules=None, stop_on_failure=False):
+    def __init__(self, storage, run_id, endpoints, variables, settings, body_overrides, user_credentials=None, admin_credentials=None, auth_configs=None, response_rules=None, extraction_rules=None, stop_on_failure=False, retry_policy=None):
         super().__init__()
         self.storage = storage
         self.run_id = run_id
@@ -49,6 +50,7 @@ class RunWorker(QThread):
         self.extraction_rules = extraction_rules or {}
         self.stop_on_failure = stop_on_failure
         self.cancel_event = Event()
+        self.retry_policy = retry_policy or RetryPolicy()
 
     def cancel(self):
         self.cancel_event.set()
@@ -85,19 +87,26 @@ class RunWorker(QThread):
                                         "ADMIN" if needs_admin_token(endpoint) else None)
                     user_token = sessions["USER"][0] if sessions["USER"] else None
                     admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
-                    result = execute(
-                        endpoint, self.variables,
-                        timeout=self.settings.values["default_timeout_seconds"],
-                        verify_ssl=self.settings.values["verify_ssl"],
-                        allow_writes=self.settings.values["dangerous_methods_enabled"],
-                        raw_body_override=self.body_overrides.get(key),
-                        user_access_token=user_token,
-                        admin_access_token=admin_token,
-                        file_root=self.settings.root / self.settings.values["file_root"],
-                        assertions=self.response_rules.get(key, []),
-                        extraction_rules=self.extraction_rules.get(key, []),
-                        captured_variables=self.variables,
-                        client=client)
+                    def request_once():
+                        return execute(
+                            endpoint, self.variables,
+                            timeout=self.settings.values["default_timeout_seconds"],
+                            verify_ssl=self.settings.values["verify_ssl"],
+                            allow_writes=self.settings.values["dangerous_methods_enabled"],
+                            raw_body_override=self.body_overrides.get(key),
+                            user_access_token=user_token,
+                            admin_access_token=admin_token,
+                            file_root=self.settings.root / self.settings.values["file_root"],
+                            assertions=self.response_rules.get(key, []),
+                            extraction_rules=self.extraction_rules.get(key, []),
+                            captured_variables=self.variables,
+                            client=client)
+                    result = execute_with_retries(
+                        request_once, endpoint, self.retry_policy,
+                        cancelled=self.cancel_event.is_set)
+                    if result is None:
+                        status = "CANCELLED"
+                        break
                     # Only read-only requests may be automatically replayed after 401.
                     if (not self.cancel_event.is_set() and selected_profile and result.get("http_status") == 401
                             and endpoint.method.upper() in ("GET", "HEAD", "OPTIONS")
@@ -625,6 +634,17 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         stop_on_failure = choice == "즉시 중단"
+        attempts, ok = QInputDialog.getInt(
+            self, "읽기 API 재시도", "일시적인 장애 시 재시도 횟수 (0~5)", 0, 0, 5)
+        if not ok:
+            return
+        delay = 0.0
+        if attempts:
+            delay, ok = QInputDialog.getDouble(
+                self, "재시도 간격", "재시도 사이 대기 시간(초)", 0.5, 0, 10, 1)
+            if not ok:
+                return
+        retry_policy = RetryPolicy(attempts, delay)
         user_credentials = None
         if any(needs_user_token(e) for _, e in endpoints):
             answer = QMessageBox.question(
@@ -678,7 +698,7 @@ class MainWindow(QMainWindow):
         self.worker = RunWorker(
             self.storage, run_id, endpoints, self.environment.copy(), self.settings,
             body_overrides, user_credentials, admin_credentials, auth_configs, response_rules, extraction_rules,
-            stop_on_failure=stop_on_failure)
+            stop_on_failure=stop_on_failure, retry_policy=retry_policy)
         self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
         self.worker.step_result.connect(lambda i, total, name, state: (
             self.run_progress.setValue(round(i / total * 100)),
