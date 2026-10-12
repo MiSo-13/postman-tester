@@ -22,6 +22,7 @@ from .reports import export_reports
 from .user_auth import login_tokens, refresh_tokens, needs_user_token, needs_admin_token, LoginError, DEFAULT_LOGIN_CONFIGS
 from .postman_auth_config import clean_environment, discover_auth
 from .auth_profile_dialog import AuthProfileDialog
+from .ai_test_dialog import AITestDialog
 from .request_overrides import endpoint_key, validate_raw_json
 from .scenarios import resolve_steps, validate_steps, should_stop
 from .retry import retry_candidates
@@ -227,6 +228,7 @@ class MainWindow(QMainWindow):
             ("시나리오 관리", self.manage_scenarios),
             ("실행 회차 비교", self.compare_run_history),
             ("실행 결과 대시보드", self.show_dashboard),
+            ("AI 테스트 계획", self.ai_test_plan),
             ("테스트 실행", self.start_run),
         ]:
             button = QPushButton(label)
@@ -642,7 +644,24 @@ class MainWindow(QMainWindow):
             self.cancel_button.setEnabled(False)
             self.statusBar().showMessage("취소 요청됨: 현재 HTTP 요청 종료 후 중단")
 
-    def start_run(self, checked=False, *, retry_endpoints=None):
+    def ai_test_plan(self):
+        if not self.current_project() or not self.endpoints:
+            QMessageBox.warning(self, "Collection 필요", "먼저 Collection을 업로드하세요.")
+            return
+        if hasattr(self, "worker") and self.worker.isRunning():
+            QMessageBox.warning(self, "실행 중", "기존 테스트가 끝난 뒤 AI 모드를 실행하세요.")
+            return
+        dialog = AITestDialog(self.endpoint_keys, self.endpoints, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            ordered = resolve_steps(dialog.selected_keys, self.endpoint_keys, self.endpoints)
+        except ValueError as exc:
+            QMessageBox.warning(self, "계획 오류", str(exc))
+            return
+        self.start_run(planned_endpoints=ordered)
+
+    def start_run(self, checked=False, *, retry_endpoints=None, planned_endpoints=None):
         if hasattr(self, "worker") and self.worker.isRunning():
             QMessageBox.warning(self, "실행 중", "이미 실행 중인 작업이 있습니다.")
             return
@@ -654,7 +673,10 @@ class MainWindow(QMainWindow):
         if not self.current_project() or not self.endpoints:
             QMessageBox.warning(self, "실행 불가", "프로젝트와 Collection을 선택하세요.")
             return
-        if retry_endpoints is not None:
+        if planned_endpoints is not None:
+            endpoints = planned_endpoints
+            scenario_name = "AI 승인 테스트"
+        elif retry_endpoints is not None:
             endpoints = retry_endpoints
             scenario_name = '실패 읽기 API 재실행'
         else:
