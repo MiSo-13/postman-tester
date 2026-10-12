@@ -132,6 +132,7 @@ class RunWorker(QThread):
                                 raw_body_override=self.body_overrides.get(key),
                                 user_access_token=user_token,
                                 admin_access_token=admin_token,
+                                file_root=self.settings.root / self.settings.values["file_root"],
                                 assertions=self.response_rules.get(key, []),
                                 extraction_rules=self.extraction_rules.get(key, []),
                                 captured_variables=self.variables,
