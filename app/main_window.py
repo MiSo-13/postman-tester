@@ -268,11 +268,17 @@ class MainWindow(QMainWindow):
             ["API", "Method", "상태", "HTTP", "시간(ms)", "상세"])
         self.result_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.result_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.response_inspector = QTextEdit()
+        self.response_inspector.setReadOnly(True)
+        self.response_inspector.setPlainText("실행 결과를 선택하면 응답 미리보기를 확인할 수 있습니다.")
+        self.result_table.itemSelectionChanged.connect(self.show_selected_response)
         self.retry_button = QPushButton("선택한 실패 읽기 API 재실행")
         self.retry_button.clicked.connect(self.retry_failed)
         results_panel = QWidget()
         results_layout = QVBoxLayout(results_panel)
         results_layout.addWidget(self.result_table)
+        results_layout.addWidget(QLabel("응답 미리보기 (메모리 전용 · 문자열 마스킹)"))
+        results_layout.addWidget(self.response_inspector)
         results_layout.addWidget(self.retry_button)
         self.report_list = QListWidget()
         for name, widget in [("Request 미리보기", self.request_text),
@@ -730,6 +736,8 @@ class MainWindow(QMainWindow):
             for key, _ in endpoints
         }
         run_id = self.storage.create_run(self.current_project(), scenario_name or '기본 실행')
+        self.response_previews.clear()
+        self.active_preview_run = run_id
         self.log_text.append(f'Run ID: {run_id}')
         self.worker = RunWorker(
             self.storage, run_id, endpoints, self.environment.copy(), self.settings,
@@ -739,6 +747,7 @@ class MainWindow(QMainWindow):
         self.worker.step_result.connect(lambda i, total, name, state: (
             self.run_progress.setValue(round(i / total * 100)),
             self.log_text.append(f"단계 {i}/{total}: [{state}] {name}")))
+        self.worker.response_preview.connect(self.record_response_preview)
         self.worker.finished_run.connect(self.run_finished)
         self.run_progress.setValue(0)
         self.cancel_button.setEnabled(True)
