@@ -30,6 +30,7 @@ from .trend_chart import TrendChart
 from .retry_policy import RetryPolicy, execute_with_retries
 from .themes import THEMES, validate_theme, apply_theme
 from .performance_reports import export_performance_report
+from .assertion_editor import AssertionRuleEditor
 
 
 class RunWorker(QThread):
@@ -427,14 +428,15 @@ class MainWindow(QMainWindow):
             return
         key = self.endpoint_keys[index]
         existing = self.storage.get_response_assertions(self.current_project(), key)
-        raw, ok = QInputDialog.getMultiLineText(
-            self, "응답 검증 규칙", "JSON 규칙 배열 (status / exists / equals / value_type / range / length)\n배열 경로 예: data.users[0].id",
-            json.dumps(existing, ensure_ascii=False, indent=2))
-        if not ok:
+        try:
+            dialog = AssertionRuleEditor(existing, self)
+        except ValueError as exc:
+            QMessageBox.warning(self, "규칙 오류", str(exc))
+            return
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            rules = json.loads(raw)
-            self.storage.save_response_assertions(self.current_project(), key, rules)
+            self.storage.save_response_assertions(self.current_project(), key, dialog.rules)
         except (ValueError, TypeError) as exc:
             QMessageBox.warning(self, "규칙 오류", str(exc))
             return
