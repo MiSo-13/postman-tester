@@ -70,7 +70,8 @@ class EndpointExplorer(QWidget):
         def visit(item):
             matched = not query or any(
                 query in item.text(col).casefold() for col in range(item.columnCount()))
-            child_match = any(visit(item.child(i)) for i in range(item.childCount()))
+            child_results = [visit(item.child(i)) for i in range(item.childCount())]
+            child_match = any(child_results)
             item.setHidden(not (matched or child_match))
             if query and child_match:
                 item.setExpanded(True)
