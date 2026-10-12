@@ -81,6 +81,9 @@ class Storage:
             CREATE INDEX IF NOT EXISTS idx_results_run ON run_results(run_id);
             CREATE INDEX IF NOT EXISTS idx_reports_run ON reports(run_id);
             """)
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(run_results)")}
+            if "retry_count" not in columns:
+                db.execute("ALTER TABLE run_results ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
 
     def connect(self):
         db = sqlite3.connect(self.db_path)
@@ -126,15 +129,24 @@ class Storage:
                 (status, utc_now(), run_id))
 
     def add_result(self, run_id: str, name: str, method: str, url: str,
-                   status: str, http_status=None, elapsed_ms=None, detail=""):
+                   status: str, http_status=None, elapsed_ms=None, detail="", retry_count=0):
         with self.connect() as db:
-            db.execute("INSERT INTO run_results VALUES(?,?,?,?,?,?,?,?,?)",
-                (str(uuid.uuid4()), run_id, name, method, url, status, http_status, elapsed_ms, detail))
+            db.execute(
+                "INSERT INTO run_results (id, run_id, endpoint_name, method, url, "
+                "status, http_status, elapsed_ms, detail, retry_count) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), run_id, name, method, url, status,
+                 http_status, elapsed_ms, detail, retry_count))
 
     def runs(self, project_id: str) -> list[dict]:
         with self.connect() as db:
             return [dict(r) for r in db.execute(
                 "SELECT * FROM test_runs WHERE project_id=? ORDER BY started_at DESC", (project_id,))]
+
+    def get_run(self, run_id: str) -> dict | None:
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM test_runs WHERE id=?", (run_id,)).fetchone()
+            return dict(row) if row else None
 
     def results(self, run_id: str) -> list[dict]:
         with self.connect() as db:
