@@ -91,6 +91,18 @@ class AITestDialog(QDialog):
     def show_error(self, message):
         QMessageBox.warning(self, "AI 계획 생성 실패", message)
 
+    def reject(self):
+        if self.worker and self.worker.isRunning():
+            QMessageBox.information(self, "계획 생성 중", "AI 응답 처리가 완료된 후 창을 닫을 수 있습니다.")
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self.worker and self.worker.isRunning():
+            event.ignore()
+            return
+        super().closeEvent(event)
+
     def accept(self):
         if self.worker and self.worker.isRunning():
             QMessageBox.warning(self, "생성 중", "계획 생성이 끝나야 실행할 수 있습니다.")
