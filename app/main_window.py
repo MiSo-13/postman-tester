@@ -279,7 +279,7 @@ class MainWindow(QMainWindow):
         ]
         self.sidebar = NavigationSidebar(navigation)
         for label, button in self.sidebar.buttons.items():
-            if label not in ("새 프로젝트", "예제 JSON 내려받기"):
+            if label not in ("새 프로젝트", "예제 JSON 내려받기", "홈", "API 탐색", "실행 이력"):
                 self.project_buttons.append(button)
         workspace.addWidget(self.sidebar)
         main_panel = QWidget()
