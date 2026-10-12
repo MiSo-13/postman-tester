@@ -26,14 +26,24 @@ def generate_plan(api_key, model, endpoint_keys, endpoints, *, max_steps=15,
     if not catalog:
         raise AIPlanningError("AI 계획을 생성할 API가 없습니다.")
     instruction = planner_instructions()
+    # Compact per-request aliases avoid sending 64-character SHA keys repeatedly.
+    aliases = {str(i): entry["key"] for i, entry in enumerate(catalog)}
+    compact_catalog = [
+        {"id": str(i), "m": entry["method"], "u": entry["url"][:180],
+         "n": entry["name"][:90], "a": entry["auth"]}
+        for i, entry in enumerate(catalog)
+    ]
     request_body = {
         "model": model,
         "instructions": instruction,
-        "input": json.dumps({"max_steps": max_steps, "catalog": catalog}, ensure_ascii=False),
+        "input": json.dumps({"max_steps": max_steps, "catalog": compact_catalog}, ensure_ascii=False, separators=(",", ":")),
         "text": {"format": {"type": "json_schema", "name": "api_test_plan",
                             "strict": True, "schema": PLAN_SCHEMA}},
-        "store": False
+        "store": False,
+        "max_output_tokens": min(3800, 600 + max_steps * 110)
     }
+    if model.startswith(("gpt-5", "o3", "o4")):
+        request_body["reasoning"] = {"effort": "low"}
     try:
         with httpx.Client(timeout=timeout, follow_redirects=False) as client:
             response = client.post(
@@ -45,6 +55,10 @@ def generate_plan(api_key, model, endpoint_keys, endpoints, *, max_steps=15,
             raise AIPlanningError(f"AI 계획 생성 실패: OpenAI HTTP {response.status_code}")
         payload = response.json()
         plan = parse_response_text(payload)
+        if isinstance(plan, dict) and isinstance(plan.get("steps"), list):
+            for step in plan["steps"]:
+                if isinstance(step, dict) and step.get("key") in aliases:
+                    step["key"] = aliases[step["key"]]
         checked = validate_ai_plan(plan, catalog)
         if len(checked["steps"]) > max_steps:
             raise AIPlanningError("요청한 최대 단계 수를 초과했습니다.")
