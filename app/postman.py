@@ -17,6 +17,11 @@ class Endpoint:
 
 def parse_collection(path: str | Path) -> tuple[dict, list[Endpoint]]:
     document = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    return document, endpoints_from_document(document)
+
+
+def endpoints_from_document(document: dict) -> list[Endpoint]:
+    """Parse Collection v2.1 in memory; never write imported content to temp files."""
     if not isinstance(document, dict) or not isinstance(document.get("item"), list):
         raise ValueError("올바른 Postman Collection JSON이 아닙니다.")
     endpoints = []
@@ -35,8 +40,7 @@ def parse_collection(path: str | Path) -> tuple[dict, list[Endpoint]]:
             url = request.get("url", "")
             if isinstance(url, dict):
                 url = url.get("raw", "")
-            # Postman inheritance precedence: request > nearest folder > collection.
-            # An explicit noauth clears inherited auth; a missing auth inherits.
+            # Request auth overrides nearest folder and collection auth.
             effective_request = dict(request)
             if "auth" not in effective_request and inherited_auth is not None:
                 effective_request["auth"] = inherited_auth
@@ -51,16 +55,7 @@ def parse_collection(path: str | Path) -> tuple[dict, list[Endpoint]]:
             ))
 
     visit(document["item"], [], document.get("auth"))
-    return document, endpoints
-
-
-def endpoints_from_document(document: dict) -> list[Endpoint]:
-    """Parse a stored collection without requiring its original file."""
-    import tempfile
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "collection.json"
-        path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
-        return parse_collection(path)[1]
+    return endpoints
 
 
 def parse_environment(path: str | Path) -> dict:
