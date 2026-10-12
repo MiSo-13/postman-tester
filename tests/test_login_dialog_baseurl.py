@@ -43,7 +43,7 @@ def test_login_error_shows_warning_without_escaping_slot(app):
     dialog.password.setText("wrong")
     messages = []
     try:
-        with patch("app.auth_profile_dialog.login_tokens", side_effect=LoginError("HTTP 401")) as login, \\
+        with patch("app.auth_profile_dialog.login_tokens", side_effect=LoginError("HTTP 401")) as login, \
              patch.object(QMessageBox, "warning", side_effect=lambda *args: messages.append(args[2])):
             dialog.test_login()
         assert len(messages) == 1
