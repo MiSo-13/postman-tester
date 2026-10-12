@@ -260,3 +260,23 @@ class Storage:
     def delete_scenario(self, project_id: str, scenario_id: str):
         with self.connect() as db:
             db.execute("DELETE FROM scenarios WHERE id=? AND project_id=?", (scenario_id, project_id))
+
+    def results_for_runs(self, project_id: str, run_ids: list[str]) -> dict[str, list[dict]]:
+        """Read several histories with one SQL query, scoped to owning project."""
+        if not run_ids:
+            return {}
+        if len(run_ids) > 200:
+            raise ValueError("최대 200회 실행 이력만 조회할 수 있습니다.")
+        ids = list(dict.fromkeys(run_ids))
+        placeholders = ",".join("?" for _ in ids)
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT rr.*, rr.run_id FROM run_results rr "
+                "JOIN test_runs tr ON tr.id = rr.run_id "
+                f"WHERE tr.project_id = ? AND rr.run_id IN ({placeholders}) "
+                "ORDER BY rr.rowid",
+                [project_id, *ids]).fetchall()
+        result = {identifier: [] for identifier in ids}
+        for row in rows:
+            result[row["run_id"]].append(dict(row))
+        return result
