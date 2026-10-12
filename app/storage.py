@@ -104,6 +104,9 @@ class Storage:
             return [dict(row) for row in db.execute("SELECT * FROM projects ORDER BY created_at")]
 
     def save_import(self, project_id: str, kind: str, filename: str, document: dict) -> str:
+        if kind == "environment":
+            from .postman_auth_config import clean_environment
+            document, _ = clean_environment(document)
         identifier = str(uuid.uuid4())
         with self.connect() as db:
             db.execute("INSERT INTO imports VALUES(?,?,?,?,?,?)",
