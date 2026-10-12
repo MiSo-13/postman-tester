@@ -122,7 +122,7 @@ class RunWorker(QThread):
                                 assertions=self.response_rules.get(key, []),
                                 extraction_rules=self.extraction_rules.get(key, []),
                                 captured_variables=self.variables,
-                        client=client)
+                                client=client)
                         except LoginError as exc:
                             self.progress.emit(f"{selected_profile} 토큰 갱신", f"ERROR: {exc}")
                             result["status"] = "ERROR"
@@ -187,6 +187,16 @@ class MainWindow(QMainWindow):
             button.clicked.connect(callback)
             top.addWidget(button)
         layout.addLayout(top)
+        run_controls = QHBoxLayout()
+        self.run_progress = QProgressBar()
+        self.run_progress.setRange(0, 100)
+        self.run_progress.setValue(0)
+        self.cancel_button = QPushButton("실행 취소")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.clicked.connect(self.cancel_run)
+        run_controls.addWidget(self.run_progress)
+        run_controls.addWidget(self.cancel_button)
+        layout.addLayout(run_controls)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.tree = QTreeWidget()
@@ -559,7 +569,16 @@ class MainWindow(QMainWindow):
         self.body_editor.blockSignals(False)
         self.body_message.setText("원본으로 복원되었습니다.")
 
+    def cancel_run(self):
+        if hasattr(self, "worker") and self.worker.isRunning():
+            self.worker.cancel()
+            self.cancel_button.setEnabled(False)
+            self.statusBar().showMessage("취소 요청됨: 현재 HTTP 요청 종료 후 중단")
+
     def start_run(self, checked=False, *, retry_endpoints=None):
+        if hasattr(self, "worker") and self.worker.isRunning():
+            QMessageBox.warning(self, "실행 중", "이미 실행 중인 작업이 있습니다.")
+            return
         if self.body_message.text() == "저장되지 않은 수정사항":
             QMessageBox.warning(
                 self, "저장되지 않은 JSON",
@@ -661,12 +680,17 @@ class MainWindow(QMainWindow):
             body_overrides, user_credentials, admin_credentials, auth_configs, response_rules, extraction_rules,
             stop_on_failure=stop_on_failure)
         self.worker.progress.connect(lambda name, state: self.log_text.append(f"[{state}] {name}"))
-        self.worker.step_result.connect(lambda i, total, name, state: self.log_text.append(f'단계 {i}/{total}: [{state}] {name}'))
+        self.worker.step_result.connect(lambda i, total, name, state: (
+            self.run_progress.setValue(round(i / total * 100)),
+            self.log_text.append(f"단계 {i}/{total}: [{state}] {name}")))
         self.worker.finished_run.connect(self.run_finished)
+        self.run_progress.setValue(0)
+        self.cancel_button.setEnabled(True)
         self.worker.start()
         self.statusBar().showMessage("테스트 실행 중")
 
     def run_finished(self, run_id):
+        self.cancel_button.setEnabled(False)
         try:
             paths = export_reports(self.storage, run_id, self.settings.data_path() / "reports" / run_id)
             self.log_text.append("보고서 보존: " + ", ".join(map(str, paths)))
