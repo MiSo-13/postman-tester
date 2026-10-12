@@ -446,6 +446,7 @@ class MainWindow(QMainWindow):
                 groups[folder] = parent
             item = QTreeWidgetItem([endpoint.name, endpoint.method])
             item.setData(0, Qt.ItemDataRole.UserRole, index)
+            item.setData(0, Qt.ItemDataRole.UserRole + 1, endpoint.url)
             parent.addChild(item)
         self.tree.expandAll()
         self.explorer.apply_filter(self.explorer.search.text())
