@@ -110,20 +110,22 @@ class RunWorker(QThread):
                     user_token = sessions["USER"][0] if sessions["USER"] else None
                     admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
                     def request_once():
+                        # Single request builder reused for normal run and post-refresh replay.
                         return execute(
                             endpoint, self.variables,
                             timeout=self.settings.values["default_timeout_seconds"],
                             verify_ssl=self.settings.values["verify_ssl"],
                             allow_writes=self.settings.values["dangerous_methods_enabled"],
                             raw_body_override=self.body_overrides.get(key),
-                            user_access_token=user_token,
-                            admin_access_token=admin_token,
+                            user_access_token=sessions["USER"][0] if sessions["USER"] else None,
+                            admin_access_token=sessions["ADMIN"][0] if sessions["ADMIN"] else None,
                             file_root=self.settings.root / self.settings.values["file_root"],
                             assertions=self.response_rules.get(key, []),
                             extraction_rules=self.extraction_rules.get(key, []),
                             captured_variables=self.variables,
                             client=client,
-                            preview_callback=lambda text, row=step_index - 1: self.response_preview.emit(self.run_id, row, text))
+                            preview_callback=lambda text, row=step_index - 1:
+                                self.response_preview.emit(self.run_id, row, text))
                     attempts = []
                     result = execute_with_retries(
                         request_once, endpoint, self.retry_policy,
@@ -147,20 +149,7 @@ class RunWorker(QThread):
                             self.progress.emit(f"{selected_profile} 토큰 갱신", "PASS")
                             user_token = sessions["USER"][0] if sessions["USER"] else None
                             admin_token = sessions["ADMIN"][0] if sessions["ADMIN"] else None
-                            result = execute(
-                                endpoint, self.variables,
-                                timeout=self.settings.values["default_timeout_seconds"],
-                                verify_ssl=self.settings.values["verify_ssl"],
-                                allow_writes=self.settings.values["dangerous_methods_enabled"],
-                                raw_body_override=self.body_overrides.get(key),
-                                user_access_token=user_token,
-                                admin_access_token=admin_token,
-                                file_root=self.settings.root / self.settings.values["file_root"],
-                                assertions=self.response_rules.get(key, []),
-                                extraction_rules=self.extraction_rules.get(key, []),
-                                captured_variables=self.variables,
-                                client=client,
-                                preview_callback=lambda text, row=step_index - 1: self.response_preview.emit(self.run_id, row, text))
+                            result = request_once()
                         except LoginError as exc:
                             self.progress.emit(f"{selected_profile} 토큰 갱신", f"ERROR: {exc}")
                             result["status"] = "ERROR"
